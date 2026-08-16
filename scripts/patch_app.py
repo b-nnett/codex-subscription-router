@@ -21,7 +21,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_VERSION = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-DEFAULT_SOURCE = Path("/Applications/ChatGPT.app")
+DEFAULT_SOURCE_CANDIDATES = (
+    Path("/Applications/ChatGPT.app"),
+    Path("/Applications/Codex.app"),
+)
 DEFAULT_DESTINATION = Path.home() / "Applications" / "Codex Subscription Router.app"
 DEFAULT_STATE_ROOT = Path.home() / ".codex-mux"
 CONTROL_PORT = 48123
@@ -49,16 +52,37 @@ TESTED_SOURCE_BUILDS = {
     (
         "26.803.61601",
         "6396",
-    ): "d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf",
+    ): {
+        "asar_hash": "d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf",
+        "patch_renderer": True,
+        "bundled_computer_use": True,
+        "isolate_sqlite": False,
+    },
+    (
+        "26.707.31123",
+        "5042",
+    ): {
+        "asar_hash": "c5a6dd83cb104957b6eb3c055273159b61bfa003b81629fa7458fbdeaffc7db5",
+        "patch_renderer": False,
+        "bundled_computer_use": False,
+        "isolate_sqlite": True,
+    },
 }
 EXPECTED_CUA_IDENTIFIER_REPLACEMENTS = 49
 EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS = 17
 
 
+def default_source_app() -> Path:
+    for candidate in DEFAULT_SOURCE_CANDIDATES:
+        if candidate.is_dir():
+            return candidate
+    return DEFAULT_SOURCE_CANDIDATES[0]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {PROJECT_VERSION}")
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--source", type=Path, default=default_source_app())
     parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
     parser.add_argument(
         "--force",
@@ -613,12 +637,23 @@ def sign_computer_use_code(
 
 
 def sign_independent_app(
-    app: Path, identity: str, team_identifier: str | None
+    app: Path,
+    identity: str,
+    team_identifier: str | None,
+    bundled_computer_use: bool,
 ) -> None:
     """Apply one stable identity throughout the modified Electron bundle."""
-    computer_use_entitlements = capture_computer_use_entitlements(app)
-    patch_computer_use_identity(app, team_identifier)
-    sign_computer_use_code(app, identity, computer_use_entitlements)
+    if bundled_computer_use:
+        computer_use_entitlements = capture_computer_use_entitlements(app)
+        patch_computer_use_identity(app, team_identifier)
+        sign_computer_use_code(app, identity, computer_use_entitlements)
+    else:
+        sign_runtime_executable(
+            app / "Contents" / "MacOS" / "ChatGPT",
+            identity,
+            OPENAI_DESKTOP_CODE_IDENTIFIER,
+            runtime=False,
+        )
     run(
         [
             "codesign",
@@ -675,16 +710,31 @@ def build_proxy(destination: Path) -> None:
     destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def install_launcher(app: Path) -> None:
+def copy_app_bundle(source: Path, destination: Path) -> None:
+    """Prefer an APFS clone so a second desktop bundle needs little free space."""
+    clone = subprocess.run(
+        ["cp", "-cRp", str(source), str(destination)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if clone.returncode == 0:
+        return
+    if destination.exists():
+        shutil.rmtree(destination)
+    run(["ditto", str(source), str(destination)])
+
+
+def install_launcher(app: Path, isolate_sqlite: bool) -> None:
     """Pass Chromium its isolated profile before Electron's main process starts."""
     launcher = app / "Contents" / "MacOS" / "CodexSubscriptionRouterLauncher"
+    command = ["xcrun", "clang", "-Os", "-Wall", "-Wextra"]
+    if isolate_sqlite:
+        command.append("-DCODEX_MUX_ISOLATE_SQLITE=1")
     run(
         [
-            "xcrun",
-            "clang",
-            "-Os",
-            "-Wall",
-            "-Wextra",
+            *command,
             "-o",
             str(launcher),
             str(PROJECT_ROOT / "native" / "launcher.c"),
@@ -996,7 +1046,7 @@ def patch_renderer(extracted: Path, token: str) -> None:
 
 
 def patch_desktop_profile(
-    extracted: Path, installed_computer_use_app: Path
+    extracted: Path, installed_computer_use_app: Path | None
 ) -> None:
     """Give the copied Electron app its own user-data and single-instance scope."""
     bootstrap_files = list((extracted / ".vite" / "build").glob("bootstrap-*.js"))
@@ -1016,6 +1066,12 @@ def patch_desktop_profile(
 
     def replacement(match: re.Match[str]) -> str:
         electron = match.group("electron")
+        profile = (
+            f"{electron}.app.setPath(`userData`,"
+            f"{electron}.app.getPath(`appData`)+`/{DESKTOP_PROFILE_NAME}`)"
+        )
+        if installed_computer_use_app is None:
+            return profile
         computer_use_pipe = json.dumps(str(DEFAULT_STATE_ROOT / "computer-use.sock"))
         computer_use_app = json.dumps(str(installed_computer_use_app))
         return (
@@ -1023,8 +1079,7 @@ def patch_desktop_profile(
             f"process.env.SKY_CUA_SERVICE_PATH={computer_use_app};"
             f"process.env.CODEX_ELECTRON_COMPUTER_USE_APP_PATH={computer_use_app};"
             "process.env.CODEX_ELECTRON_SKIP_COMPUTER_USE_CANONICAL_REFRESH=`1`;"
-            f"{electron}.app.setPath(`userData`,"
-            f"{electron}.app.getPath(`appData`)+`/{DESKTOP_PROFILE_NAME}`)"
+            + profile
         )
 
     bootstrap, replacements = profile_pattern.subn(replacement, bootstrap, count=1)
@@ -1048,42 +1103,43 @@ def patch_desktop_profile(
         )
     main_path = main_files[0]
     main = main_path.read_text(encoding="utf-8")
-    managed_service_pattern = re.compile(
-        r"(?P<prefix>[A-Za-z_$][\w$]*=new [A-Za-z_$][\w$]*\()"
-        r"[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.codexHome\)"
-        r"(?P<suffix>,\{onServiceAvailable:)"
-    )
-    main, managed_service_replacements = managed_service_pattern.subn(
-        lambda match: (
-            match.group("prefix")
-            + json.dumps(str(installed_computer_use_app))
-            + match.group("suffix")
-        ),
-        main,
-        count=1,
-    )
-    if managed_service_replacements != 1:
-        raise RuntimeError(
-            "could not pin the managed Computer Use service to its installed app"
+    if installed_computer_use_app is not None:
+        managed_service_pattern = re.compile(
+            r"(?P<prefix>[A-Za-z_$][\w$]*=new [A-Za-z_$][\w$]*\()"
+            r"[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.codexHome\)"
+            r"(?P<suffix>,\{onServiceAvailable:)"
         )
+        main, managed_service_replacements = managed_service_pattern.subn(
+            lambda match: (
+                match.group("prefix")
+                + json.dumps(str(installed_computer_use_app))
+                + match.group("suffix")
+            ),
+            main,
+            count=1,
+        )
+        if managed_service_replacements != 1:
+            raise RuntimeError(
+                "could not pin the managed Computer Use service to its installed app"
+            )
 
-    computer_use_instruction = (
-        "Control desktop apps on macOS through Computer Use."
-    )
-    strict_computer_use_instruction = (
-        "Control desktop apps on macOS through Computer Use via node_repl and "
-        "@oai/sky only. Never use shell commands, open, AppleScript, osascript, "
-        "JXA, System Events, or CGEvent synthesis for computer interactions or "
-        "as a fallback. If Computer Use is unavailable, report the failure "
-        "instead of using another automation method."
-    )
-    if main.count(computer_use_instruction) != 1:
-        raise RuntimeError("could not find the Computer Use tool instruction")
-    main = main.replace(
-        computer_use_instruction,
-        strict_computer_use_instruction,
-        1,
-    )
+        computer_use_instruction = (
+            "Control desktop apps on macOS through Computer Use."
+        )
+        strict_computer_use_instruction = (
+            "Control desktop apps on macOS through Computer Use via node_repl and "
+            "@oai/sky only. Never use shell commands, open, AppleScript, osascript, "
+            "JXA, System Events, or CGEvent synthesis for computer interactions or "
+            "as a fallback. If Computer Use is unavailable, report the failure "
+            "instead of using another automation method."
+        )
+        if main.count(computer_use_instruction) != 1:
+            raise RuntimeError("could not find the Computer Use tool instruction")
+        main = main.replace(
+            computer_use_instruction,
+            strict_computer_use_instruction,
+            1,
+        )
     ui_test_bridge = extracted / ".vite" / "build" / "ui-test-bridge.cjs"
     shutil.copy2(PROJECT_ROOT / "ui" / "ui-test-bridge.cjs", ui_test_bridge)
     main += (
@@ -1158,7 +1214,10 @@ def patch_app(
     source_build = str(source_info.get("CFBundleVersion", "unknown"))
     source_asar = source / "Contents" / "Resources" / "app.asar"
     source_asar_hash = hashlib.sha256(source_asar.read_bytes()).hexdigest()
-    expected_asar_hash = TESTED_SOURCE_BUILDS.get((source_version, source_build))
+    source_capabilities = TESTED_SOURCE_BUILDS.get((source_version, source_build))
+    expected_asar_hash = (
+        source_capabilities["asar_hash"] if source_capabilities is not None else None
+    )
     print(
         f"Source ChatGPT version: {source_version} ({source_build}), "
         f"app.asar {source_asar_hash}"
@@ -1174,6 +1233,16 @@ def patch_app(
             "the patch will continue only while every expected anchor matches.",
             file=sys.stderr,
         )
+        source_capabilities = {
+            "patch_renderer": True,
+            "bundled_computer_use": True,
+            "isolate_sqlite": False,
+        }
+
+    assert source_capabilities is not None
+    patch_renderer_ui = bool(source_capabilities["patch_renderer"])
+    bundled_computer_use = bool(source_capabilities["bundled_computer_use"])
+    isolate_sqlite = bool(source_capabilities["isolate_sqlite"])
 
     for tool in ("codesign", "ditto", "go", "npm", "security", "xcrun"):
         require_tool(tool)
@@ -1202,18 +1271,24 @@ def patch_app(
 
         print("Building multiplexer…")
         build_proxy(proxy)
-        print("Copying ChatGPT.app…")
-        run(["ditto", str(source), str(staged_app)])
-        install_launcher(staged_app)
+        print("Copying source app…")
+        copy_app_bundle(source, staged_app)
+        install_launcher(staged_app, isolate_sqlite)
 
         resources = staged_app / "Contents" / "Resources"
         original_asar = resources / "app.asar"
         print("Patching desktop profile and renderer…")
         run([str(asar), "extract", str(original_asar), str(extracted)])
-        patch_asar_computer_use_identity(extracted)
-        patch_desktop_profile(extracted, installed_computer_use_app)
-        patch_renderer(extracted, token)
-        sign_native_code_tree(extracted, signing_identity)
+        if bundled_computer_use:
+            patch_asar_computer_use_identity(extracted)
+        patch_desktop_profile(
+            extracted,
+            installed_computer_use_app if bundled_computer_use else None,
+        )
+        if patch_renderer_ui:
+            patch_renderer(extracted, token)
+        if bundled_computer_use:
+            sign_native_code_tree(extracted, signing_identity)
         repacked_asar = temporary_path / "app.asar"
         run(
             [
@@ -1252,7 +1327,12 @@ def patch_app(
 
         patch_info_plist(staged_app, original_asar, team_identifier)
         print(f"Signing independent app copy with {signing_identity}…")
-        sign_independent_app(staged_app, signing_identity, team_identifier)
+        sign_independent_app(
+            staged_app,
+            signing_identity,
+            team_identifier,
+            bundled_computer_use,
+        )
         verify_signed_code(
             staged_app,
             DESKTOP_BUNDLE_IDENTIFIER,
@@ -1263,28 +1343,29 @@ def patch_app(
             OPENAI_DESKTOP_CODE_IDENTIFIER,
             team_identifier,
         )
-        bundled_computer_use_app = (
-            computer_use_package(staged_app) / "Codex Computer Use.app"
-        )
-        run(
-            [
-                "ditto",
-                str(bundled_computer_use_app),
-                str(staged_computer_use_app),
-            ]
-        )
-        verify_signed_code(
-            staged_computer_use_app,
-            COMPUTER_USE_BUNDLE_IDENTIFIER,
-            team_identifier,
-        )
+        if bundled_computer_use:
+            bundled_computer_use_app = (
+                computer_use_package(staged_app) / "Codex Computer Use.app"
+            )
+            run(
+                [
+                    "ditto",
+                    str(bundled_computer_use_app),
+                    str(staged_computer_use_app),
+                ]
+            )
+            verify_signed_code(
+                staged_computer_use_app,
+                COMPUTER_USE_BUNDLE_IDENTIFIER,
+                team_identifier,
+            )
 
         backup_suffix = time.strftime("%Y%m%d-%H%M%S")
         backup_directory = DEFAULT_STATE_ROOT / "backups" / backup_suffix
         app_backup = backup_directory / destination.name
         helper_backup = backup_directory / installed_computer_use_app.name
         had_app = destination.exists()
-        had_helper = installed_computer_use_app.exists()
+        had_helper = bundled_computer_use and installed_computer_use_app.exists()
         if had_app or had_helper:
             backup_directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             backup_directory.parent.chmod(0o700)
@@ -1297,13 +1378,14 @@ def patch_app(
                 installed_computer_use_app.rename(helper_backup)
                 print(f"Existing Computer Use helper moved to {helper_backup}")
             staged_app.rename(destination)
-            staged_computer_use_app.rename(installed_computer_use_app)
+            if bundled_computer_use:
+                staged_computer_use_app.rename(installed_computer_use_app)
         except OSError:
             failed_directory = backup_directory / "failed-install"
             failed_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             if destination.exists():
                 destination.rename(failed_directory / destination.name)
-            if installed_computer_use_app.exists():
+            if bundled_computer_use and installed_computer_use_app.exists():
                 installed_computer_use_app.rename(
                     failed_directory / installed_computer_use_app.name
                 )
@@ -1314,18 +1396,16 @@ def patch_app(
             raise
 
     if LAUNCH_SERVICES_REGISTER.is_file():
-        run(
-            [
-                str(LAUNCH_SERVICES_REGISTER),
-                "-f",
-                str(destination),
-                str(installed_computer_use_app),
-            ]
-        )
-    retire_stale_cached_computer_use_app()
+        launch_services_paths = [str(destination)]
+        if bundled_computer_use:
+            launch_services_paths.append(str(installed_computer_use_app))
+        run([str(LAUNCH_SERVICES_REGISTER), "-f", *launch_services_paths])
+    if bundled_computer_use:
+        retire_stale_cached_computer_use_app()
 
     print(destination)
-    print(installed_computer_use_app)
+    if bundled_computer_use:
+        print(installed_computer_use_app)
 
 
 def main() -> int:

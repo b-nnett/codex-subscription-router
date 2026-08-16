@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,8 +48,12 @@ type Child struct {
 }
 
 func Start(accountID, codexHome, executable string, args, baseEnv []string, inbound chan<- Inbound) (*Child, error) {
+	sqliteHome, err := sqliteHomeForAccount(accountID, codexHome, baseEnv)
+	if err != nil {
+		return nil, err
+	}
 	env := withEnvironment(baseEnv, "CODEX_HOME", codexHome)
-	env = withEnvironment(env, "CODEX_SQLITE_HOME", codexHome)
+	env = withEnvironment(env, "CODEX_SQLITE_HOME", sqliteHome)
 	command := exec.Command(executable, args...)
 	command.Env = env
 	stdin, err := command.StdinPipe()
@@ -78,6 +83,28 @@ func Start(accountID, codexHome, executable string, args, baseEnv []string, inbo
 	go child.readLoop(stdout)
 	go child.waitLoop()
 	return child, nil
+}
+
+func sqliteHomeForAccount(accountID, codexHome string, environment []string) (string, error) {
+	if environmentValue(environment, "CODEX_MUX_ISOLATE_SQLITE") != "1" {
+		return codexHome, nil
+	}
+	root := environmentValue(environment, "CODEX_MUX_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		root = filepath.Join(home, ".codex-mux")
+	}
+	sqliteHome := filepath.Join(root, "sqlite", accountID)
+	if err := os.MkdirAll(sqliteHome, 0o700); err != nil {
+		return "", fmt.Errorf("create isolated sqlite home for %s: %w", accountID, err)
+	}
+	if err := os.Chmod(sqliteHome, 0o700); err != nil {
+		return "", fmt.Errorf("secure isolated sqlite home for %s: %w", accountID, err)
+	}
+	return sqliteHome, nil
 }
 
 func (c *Child) AccountID() string {
@@ -199,4 +226,14 @@ func withEnvironment(environment []string, key, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
+}
+
+func environmentValue(environment []string, key string) string {
+	prefix := key + "="
+	for index := len(environment) - 1; index >= 0; index-- {
+		if strings.HasPrefix(environment[index], prefix) {
+			return strings.TrimPrefix(environment[index], prefix)
+		}
+	}
+	return ""
 }

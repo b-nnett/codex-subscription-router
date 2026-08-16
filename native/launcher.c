@@ -41,6 +41,13 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+#ifdef CODEX_MUX_ISOLATE_SQLITE
+    if (setenv("CODEX_MUX_ISOLATE_SQLITE", "1", 1) != 0) {
+        perror("Codex Subscription Router launcher");
+        return EXIT_FAILURE;
+    }
+#endif
+
     char profile[PATH_MAX];
     if (snprintf(profile, sizeof(profile),
                  "--user-data-dir=%s/Library/Application Support/Codex Subscription Router",

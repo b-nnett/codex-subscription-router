@@ -2,13 +2,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,11 +38,14 @@ func main() {
 }
 
 func run() error {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "routerctl" {
+		return runRouterControl(args[1:])
+	}
 	realExecutable, err := resolveRealExecutable()
 	if err != nil {
 		return err
 	}
-	args := os.Args[1:]
 	if !isInteractiveAppServer(args) {
 		return passthrough(realExecutable, args)
 	}
@@ -121,6 +128,147 @@ func run() error {
 	}
 	cancel()
 	return scanner.Err()
+}
+
+func runRouterControl(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: routerctl list | add [label] | login <account-id> | enable <account-id> | disable <account-id>")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	root := os.Getenv("CODEX_MUX_HOME")
+	if root == "" {
+		root = filepath.Join(home, ".codex-mux")
+	}
+	token, err := loadOrCreateToken(root)
+	if err != nil {
+		return err
+	}
+	port := defaultControlPort
+	if value := os.Getenv("CODEX_MUX_CONTROL_PORT"); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		if parseErr != nil || parsed <= 0 || parsed > 65535 {
+			return fmt.Errorf("invalid CODEX_MUX_CONTROL_PORT %q", value)
+		}
+		port = parsed
+	}
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+
+	switch args[0] {
+	case "list":
+		if len(args) != 1 {
+			return errors.New("usage: routerctl list")
+		}
+		response, err := controlRequest(http.MethodGet, baseURL+"/accounts", token, nil)
+		if err != nil {
+			return err
+		}
+		return printJSON(response)
+	case "add":
+		label := strings.TrimSpace(strings.Join(args[1:], " "))
+		response, err := controlRequest(
+			http.MethodPost,
+			baseURL+"/accounts",
+			token,
+			map[string]string{"label": label},
+		)
+		if err != nil {
+			return err
+		}
+		var created struct {
+			Account struct {
+				ID string `json:"id"`
+			} `json:"account"`
+		}
+		if err := json.Unmarshal(response, &created); err != nil || created.Account.ID == "" {
+			return errors.New("router returned an invalid account after creation")
+		}
+		fmt.Printf("Created account %s\n", created.Account.ID)
+		return startDeviceLogin(baseURL, token, created.Account.ID)
+	case "login":
+		if len(args) != 2 {
+			return errors.New("usage: routerctl login <account-id>")
+		}
+		return startDeviceLogin(baseURL, token, args[1])
+	case "enable", "disable":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: routerctl %s <account-id>", args[0])
+		}
+		enabled := args[0] == "enable"
+		response, err := controlRequest(
+			http.MethodPatch,
+			baseURL+"/accounts/"+url.PathEscape(args[1]),
+			token,
+			map[string]bool{"enabled": enabled},
+		)
+		if err != nil {
+			return err
+		}
+		return printJSON(response)
+	default:
+		return fmt.Errorf("unknown routerctl command %q", args[0])
+	}
+}
+
+func startDeviceLogin(baseURL, token, accountID string) error {
+	response, err := controlRequest(
+		http.MethodPost,
+		baseURL+"/accounts/"+url.PathEscape(accountID)+"/login",
+		token,
+		map[string]string{"mode": "chatgptDeviceCode"},
+	)
+	if err != nil {
+		return err
+	}
+	return printJSON(response)
+}
+
+func controlRequest(method, endpoint, token string, payload any) ([]byte, error) {
+	var requestBody io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("encode request: %w", err)
+		}
+		requestBody = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, endpoint, requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	request.Header.Set("X-Codex-Mux-Token", token)
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{Timeout: 35 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("connect to the running router: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read router response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("router returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
+func printJSON(data []byte) error {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("decode router response: %w", err)
+	}
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format router response: %w", err)
+	}
+	fmt.Println(string(encoded))
+	return nil
 }
 
 func resolveRealExecutable() (string, error) {

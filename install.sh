@@ -7,6 +7,19 @@ readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
 readonly DESTINATION_APP="${HOME}/Applications/Codex Subscription Router.app"
 readonly DESTINATION_HELPER="${HOME}/Applications/Codex Subscription Router Computer Use.app"
+readonly CONTROL_CLI="${HOME}/.local/bin/codex-subscription-router"
+
+resolve_source_app() {
+    if [ -n "${CODEX_SUBSCRIPTION_ROUTER_SOURCE_APP:-}" ]; then
+        printf '%s\n' "${CODEX_SUBSCRIPTION_ROUTER_SOURCE_APP}"
+    elif [ -d "/Applications/ChatGPT.app" ]; then
+        printf '%s\n' "/Applications/ChatGPT.app"
+    elif [ -d "/Applications/Codex.app" ]; then
+        printf '%s\n' "/Applications/Codex.app"
+    else
+        fail "install the official ChatGPT or Codex app in /Applications first."
+    fi
+}
 
 log() {
     printf '\n==> %s\n' "$1" >&2
@@ -18,14 +31,15 @@ fail() {
 }
 
 require_prerequisites() {
+    local source_app="$1"
     if [ "$(uname -s)" != "Darwin" ]; then
         fail "Codex Subscription Router supports macOS only."
     fi
     if [ "$(uname -m)" != "arm64" ]; then
         fail "Codex Subscription Router currently requires Apple silicon."
     fi
-    if [ ! -d "/Applications/ChatGPT.app" ]; then
-        fail "install the official ChatGPT app in /Applications first."
+    if [ ! -f "${source_app}/Contents/Resources/app.asar" ]; then
+        fail "${source_app} is not a supported ChatGPT or Codex app bundle."
     fi
 
     local missing=()
@@ -115,8 +129,10 @@ stop_bundle_processes() {
 }
 
 main() {
+    local source_app
+    source_app="$(resolve_source_app)"
     log "Checking this Mac"
-    require_prerequisites
+    require_prerequisites "${source_app}"
 
     local project_dir
     project_dir="$(resolve_source_dir)"
@@ -125,7 +141,10 @@ main() {
     log "Installing locked build tools"
     npm ci --ignore-scripts --no-audit --no-fund
 
-    local patch_arguments=()
+    local patch_arguments=("--source" "${source_app}")
+    if [ "${CODEX_MUX_ALLOW_ADHOC_SIGNING:-0}" = "1" ]; then
+        patch_arguments+=("--allow-adhoc-signing")
+    fi
     if [ -d "${DESTINATION_APP}" ] || [ -d "${DESTINATION_HELPER}" ]; then
         log "Stopping the existing installation"
         stop_bundle_processes "${DESTINATION_APP}"
@@ -135,6 +154,12 @@ main() {
 
     log "Building and signing Codex Subscription Router"
     python3 scripts/patch_app.py "${patch_arguments[@]}"
+
+    if [ -e "${CONTROL_CLI}" ] && [ ! -L "${CONTROL_CLI}" ]; then
+        fail "${CONTROL_CLI} already exists and is not a symlink."
+    fi
+    mkdir -p "$(dirname -- "${CONTROL_CLI}")"
+    ln -sfn "${DESTINATION_APP}/Contents/Resources/codex" "${CONTROL_CLI}"
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"
