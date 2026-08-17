@@ -122,9 +122,37 @@ def resolve_signing_identity(allow_adhoc: bool) -> str:
     )
 
 
+def certificate_team_identifier(identity: str) -> str | None:
+    """Read the team ID from the signing certificate's organizational unit."""
+    certificate = subprocess.run(
+        ["security", "find-certificate", "-c", identity, "-p"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if certificate.returncode != 0 or shutil.which("openssl") is None:
+        return None
+    subject = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject"],
+        input=certificate.stdout,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    match = re.search(r"(?:^|[,/])\s*OU\s*=\s*([A-Z0-9]{10})\b", subject.stdout)
+    return match.group(1) if match is not None else None
+
+
 def signing_team_identifier(identity: str) -> str | None:
     if identity == "-":
         return None
+    # A Developer ID name ends with the team ID, but an Apple Development name ends
+    # with the certificate ID, so prefer the team ID recorded in the certificate.
+    team_identifier = certificate_team_identifier(identity)
+    if team_identifier is not None:
+        return team_identifier
     match = re.search(r"\(([A-Z0-9]{10})\)$", identity)
     if match is None:
         raise RuntimeError(
@@ -415,10 +443,12 @@ def sign_native_code_tree(root: Path, identity: str) -> None:
 
 TEAM_SCOPED_ENTITLEMENTS = (
     "com.apple.application-identifier",
-    "com.apple.developer.team-identifier",
     "com.apple.security.application-groups",
     "keychain-access-groups",
 )
+# A restricted entitlement is only granted through a matching provisioning profile,
+# so keeping one makes AMFI kill the generated app instead of launching it.
+RESTRICTED_ENTITLEMENT_PREFIXES = ("com.apple.developer.", "com.apple.private.")
 
 
 def sanitized_runtime_entitlements(executable: Path) -> dict[str, object] | None:
@@ -439,8 +469,11 @@ def sanitized_runtime_entitlements(executable: Path) -> dict[str, object] | None
         ) from error
     if not isinstance(entitlements, dict):
         raise RuntimeError(f"invalid signing entitlements on {executable}")
-    for key in TEAM_SCOPED_ENTITLEMENTS:
-        entitlements.pop(key, None)
+    for key in list(entitlements):
+        if key in TEAM_SCOPED_ENTITLEMENTS or key.startswith(
+            RESTRICTED_ENTITLEMENT_PREFIXES
+        ):
+            del entitlements[key]
     return entitlements or None
 
 
@@ -616,6 +649,9 @@ def sign_independent_app(
     app: Path, identity: str, team_identifier: str | None
 ) -> None:
     """Apply one stable identity throughout the modified Electron bundle."""
+    # The official profile is bound to OpenAI's team, so it cannot describe the copy.
+    for profile in app.rglob("embedded.provisionprofile"):
+        profile.unlink()
     computer_use_entitlements = capture_computer_use_entitlements(app)
     patch_computer_use_identity(app, team_identifier)
     sign_computer_use_code(app, identity, computer_use_entitlements)
