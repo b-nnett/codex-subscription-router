@@ -773,6 +773,22 @@ def patch_renderer(extracted: Path, token: str) -> None:
         1,
     )
 
+    usage_query_pattern = re.compile(
+        r"queryKey:\[`rate-limit-status`\],queryFn:async\(\)=>\{try\{return await "
+        r"(?P<client>[A-Za-z_$][A-Za-z0-9_$]*)\.safeGet\(`/wham/usage`\)\}"
+    )
+    usage_query_matches = list(usage_query_pattern.finditer(bundle))
+    if len(usage_query_matches) != 1:
+        raise RuntimeError("could not find the native rate-limit status query")
+    usage_query = usage_query_matches[0]
+    bundle = (
+        bundle[: usage_query.start()]
+        + "queryKey:[`rate-limit-status`],queryFn:async()=>{try{return await "
+        "codexMuxFilterUsageStatus(await "
+        f"{usage_query.group('client')}.safeGet(`/wham/usage`))}}"
+        + bundle[usage_query.end() :]
+    )
+
     profile_query_anchor = "let e=await T_.safeGet(`/wham/profiles/me`)"
     if bundle.count(profile_query_anchor) != 1:
         raise RuntimeError("could not find the native profile stats request")

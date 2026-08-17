@@ -53,6 +53,42 @@ async function codexMuxProfileData(accountId = null) {
   return result.profile;
 }
 
+// The renderer polls `/wham/usage` over HTTP for the Primary account only, so
+// a depleted Primary shows the native usage-limit banner even while another
+// subscription still has weekly capacity. Clear the limit-reached fields when
+// the pool can still serve turns; leave the response untouched otherwise.
+async function codexMuxFilterUsageStatus(status) {
+  if (status == null || typeof status !== "object") return status;
+  const reached =
+    status.rate_limit_upsell != null ||
+    status.rate_limit_reached_type != null ||
+    status.rate_limit?.limit_reached === true ||
+    status.rate_limit?.allowed === false;
+  if (!reached) return status;
+  let accounts;
+  try {
+    accounts = (await codexMuxRequest("/accounts")).accounts || [];
+  } catch {
+    return status;
+  }
+  const poolHasCapacity = accounts.some((account) => {
+    if (!account.enabled || !account.connected) return false;
+    if (account.authType && account.authType !== "chatgpt") return false;
+    const weekly = codexMuxWeeklyWindow(account.rateLimits);
+    return weekly == null || weekly.usedPercent < 100;
+  });
+  if (!poolHasCapacity) return status;
+  return {
+    ...status,
+    rate_limit_upsell: null,
+    rate_limit_reached_type: null,
+    rate_limit:
+      status.rate_limit == null
+        ? status.rate_limit
+        : { ...status.rate_limit, allowed: true, limit_reached: false },
+  };
+}
+
 async function codexMuxRateLimitResets(accountId) {
   return codexMuxRequest(
     `/accounts/${encodeURIComponent(accountId)}/rate-limit-resets`,

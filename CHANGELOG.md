@@ -12,6 +12,11 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
 
+### Fixed
+
+- The native usage-limit banner no longer appears for a depleted Primary
+  account while another connected subscription still has weekly capacity.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

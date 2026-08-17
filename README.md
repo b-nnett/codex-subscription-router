@@ -194,6 +194,7 @@ starts another sign-in.
 | --- | --- |
 | New chat | Assigned by quota-at-risk, banked resets, and short-window pressure |
 | Follow-up | Sent to the thread's persisted account owner |
+| Primary depleted | Native usage-limit banner suppressed while the pool has capacity |
 | Owner depleted | Continued through another account with capacity |
 | Every account depleted | Combined quota alert with the next known reset |
 | Account disabled | Excluded from routing and pooled usable quota |
