@@ -12,6 +12,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
 
+### Changed
+
+- The account menu, Usage sheet, and Plugins picker open with the last known
+  subscriptions and usage and refresh in place instead of showing a connecting
+  state on every open.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

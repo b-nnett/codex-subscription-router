@@ -23,6 +23,36 @@ async function codexMuxRequest(path, options = {}) {
   return body;
 }
 
+const CODEX_MUX_ACCOUNTS_CACHE_KEY = "codex-mux.accounts";
+
+function codexMuxCachedAccounts() {
+  if (Array.isArray(globalThis.__codexMuxAccounts)) {
+    return globalThis.__codexMuxAccounts;
+  }
+  try {
+    const stored = JSON.parse(localStorage.getItem(CODEX_MUX_ACCOUNTS_CACHE_KEY));
+    if (Array.isArray(stored)) {
+      globalThis.__codexMuxAccounts = stored;
+      return stored;
+    }
+  } catch {}
+  return [];
+}
+
+function codexMuxRememberAccounts(accounts) {
+  globalThis.__codexMuxAccounts = accounts;
+  try {
+    localStorage.setItem(CODEX_MUX_ACCOUNTS_CACHE_KEY, JSON.stringify(accounts));
+  } catch {}
+}
+
+async function codexMuxFetchAccounts() {
+  const result = await codexMuxRequest("/accounts");
+  const accounts = result.accounts || [];
+  codexMuxRememberAccounts(accounts);
+  return accounts;
+}
+
 const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
   "list-apps",
   "list-installed-apps",
@@ -85,7 +115,7 @@ function CodexMuxUsageModal({
 }
 
 function CodexMuxUseResetAccountState() {
-  const cachedAccounts = (globalThis.__codexMuxConnectedAccounts || []).filter(
+  const cachedAccounts = codexMuxCachedAccounts().filter(
     (account) => account.connected && account.enabled,
   );
   const [accounts, setAccounts] = kXc.useState(cachedAccounts);
@@ -94,8 +124,7 @@ function CodexMuxUseResetAccountState() {
   const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
 
   const loadAccounts = kXc.useCallback(async () => {
-    const result = await codexMuxRequest("/accounts");
-    const connected = (result.accounts || []).filter(
+    const connected = (await codexMuxFetchAccounts()).filter(
       (account) => account.connected && account.enabled,
     );
     setAccounts(connected);
@@ -228,8 +257,10 @@ function CodexMuxResetAccountSelector({
 
 function CodexMuxAccountMenu() {
   const modalScope = Lo(Q);
-  const [accounts, setAccounts] = kXc.useState([]);
-  const [loading, setLoading] = kXc.useState(true);
+  const [accounts, setAccounts] = kXc.useState(codexMuxCachedAccounts);
+  const [loading, setLoading] = kXc.useState(
+    () => !codexMuxCachedAccounts().some((account) => account.connected),
+  );
   const [busy, setBusy] = kXc.useState(false);
   const [error, setError] = kXc.useState("");
   const [login, setLogin] = kXc.useState(null);
@@ -238,11 +269,7 @@ function CodexMuxAccountMenu() {
 
   const refresh = kXc.useCallback(async () => {
     try {
-      const result = await codexMuxRequest("/accounts");
-      const nextAccounts = result.accounts || [];
-      globalThis.__codexMuxConnectedAccounts = nextAccounts.filter(
-        (account) => account.connected && account.enabled,
-      );
+      const nextAccounts = await codexMuxFetchAccounts();
       setAccounts(nextAccounts);
       setError("");
       if (nextAccounts.some((account) => account.connected)) setLoading(false);
@@ -684,17 +711,20 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
 }
 
 function CodexMuxPluginScope() {
-  const [accounts, setAccounts] = kXc.useState([]);
+  const cachedAccounts = codexMuxCachedAccounts().filter(
+    (account) => account.connected && account.enabled,
+  );
+  const [accounts, setAccounts] = kXc.useState(cachedAccounts);
   const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [loading, setLoading] = kXc.useState(true);
+  const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
   const queryClient = lt();
   kXc.useEffect(() => {
     let live = true;
-    codexMuxRequest("/accounts")
-      .then((result) => {
+    codexMuxFetchAccounts()
+      .then((connectedAccounts) => {
         if (!live) return;
         setAccounts(
-          (result.accounts || []).filter(
+          connectedAccounts.filter(
             (account) => account.connected && account.enabled,
           ),
         );
