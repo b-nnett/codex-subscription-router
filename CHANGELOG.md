@@ -12,6 +12,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
 
+### Changed
+
+- Turn routing reads recently observed account snapshots, kept current by the
+  children's rate-limit notifications, instead of querying every app-server
+  before each turn is forwarded.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

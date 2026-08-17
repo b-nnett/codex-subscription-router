@@ -66,11 +66,40 @@ func (m *Multiplexer) Accounts(ctx context.Context) []AccountSnapshot {
 }
 
 func (m *Multiplexer) accountSnapshots(ctx context.Context, includeProfile bool) []AccountSnapshot {
+	return m.collectSnapshots(ctx, func(ctx context.Context, accountID string) (AccountSnapshot, error) {
+		return m.accountSnapshotWithProfile(ctx, accountID, includeProfile)
+	})
+}
+
+// routingSnapshots serves routing decisions from recently observed snapshots
+// and only asks a child app-server when nothing fresh is known for it.
+func (m *Multiplexer) routingSnapshots(ctx context.Context) []AccountSnapshot {
+	return m.collectSnapshots(ctx, m.routingSnapshot)
+}
+
+func (m *Multiplexer) routingSnapshot(ctx context.Context, accountID string) (AccountSnapshot, error) {
+	if snapshot, ok := m.snapshots.get(accountID, m.now(), routingSnapshotMaxAge); ok {
+		if account, exists := m.store.Account(accountID); exists {
+			snapshot.Label = account.Label
+			snapshot.Enabled = account.Enabled
+			snapshot.Controller = account.Controller
+		}
+		snapshot.ThreadCount = m.store.ThreadCounts()[accountID]
+		m.applyRateLimitPreview(&snapshot)
+		return snapshot, nil
+	}
+	return m.accountSnapshotWithProfile(ctx, accountID, false)
+}
+
+func (m *Multiplexer) collectSnapshots(
+	ctx context.Context,
+	fetch func(ctx context.Context, accountID string) (AccountSnapshot, error),
+) []AccountSnapshot {
 	accounts := m.store.Accounts()
 	results := make(chan AccountSnapshot, len(accounts))
 	for _, account := range accounts {
 		go func(account state.Account) {
-			snapshot, err := m.accountSnapshotWithProfile(ctx, account.ID, includeProfile)
+			snapshot, err := fetch(ctx, account.ID)
 			if err != nil {
 				snapshot = AccountSnapshot{
 					ID: account.ID, Label: account.Label, Enabled: account.Enabled,
@@ -205,6 +234,7 @@ func (m *Multiplexer) accountSnapshotWithProfile(ctx context.Context, accountID 
 			}
 		}
 	}
+	m.snapshots.put(snapshot, m.now())
 	m.applyRateLimitPreview(&snapshot)
 	return snapshot, nil
 }
@@ -239,7 +269,7 @@ func (m *Multiplexer) chooseAccount(ctx context.Context) (state.Account, RouteRe
 }
 
 func (m *Multiplexer) chooseAccountExcluding(ctx context.Context, excluded map[string]struct{}) (state.Account, RouteReason, error) {
-	snapshots := m.accountSnapshots(ctx, false)
+	snapshots := m.routingSnapshots(ctx)
 	type candidate struct {
 		account      state.Account
 		reason       RouteReason

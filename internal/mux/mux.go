@@ -89,6 +89,8 @@ type Multiplexer struct {
 
 	resetPreviewMu sync.RWMutex
 	resetPreviews  map[string]ResetCreditsPreview
+
+	snapshots *snapshotCache
 }
 
 func New(options Options) (*Multiplexer, error) {
@@ -112,6 +114,7 @@ func New(options Options) (*Multiplexer, error) {
 		resetCreditsCache:    make(map[string]resetCreditsCacheEntry),
 		resetCreditsEndpoint: rateLimitResetCreditsURL,
 		resetPreviews:        make(map[string]ResetCreditsPreview),
+		snapshots:            newSnapshotCache(),
 	}, nil
 }
 
@@ -322,7 +325,7 @@ func (m *Multiplexer) routeAggregatedRateLimits(message protocol.Message) {
 func (m *Multiplexer) routeTurnStart(message protocol.Message, threadID, ownerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*requestTimeout)
 	defer cancel()
-	snapshot, err := m.accountSnapshotWithProfile(ctx, ownerID, false)
+	snapshot, err := m.routingSnapshot(ctx, ownerID)
 	if err != nil || accountHasCapacity(snapshot) {
 		if err := m.forward(ownerID, message); err != nil {
 			m.write(protocol.Failure(message.ID, -32023, err.Error()))
@@ -447,6 +450,7 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 		m.externalMu.Unlock()
 		if ok {
 			if route.method == "turn/start" && isUsageLimitResponse(message) {
+				m.snapshots.forget(inbound.AccountID)
 				go m.retryTurnAfterUsageLimit(route, inbound.AccountID)
 				return
 			}
@@ -460,8 +464,12 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 		return
 	}
 	if message.Method == "account/rateLimits/updated" {
+		m.rememberRateLimitUpdate(inbound.AccountID, message.Params)
 		go m.forwardAggregatedRateLimitNotification(inbound.Raw)
 		return
+	}
+	if message.Method == "account/login/completed" || message.Method == "account/updated" {
+		m.snapshots.forget(inbound.AccountID)
 	}
 	if message.Method == "thread/started" {
 		if threadID := threadIDFromNotification(message.Params); threadID != "" {
@@ -476,6 +484,16 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 	if m.shouldForwardNotification(inbound.AccountID, message.Method) {
 		m.writeRaw(inbound.Raw)
 	}
+}
+
+func (m *Multiplexer) rememberRateLimitUpdate(accountID string, params json.RawMessage) {
+	var update struct {
+		RateLimits *RateLimits `json:"rateLimits"`
+	}
+	if json.Unmarshal(params, &update) != nil || update.RateLimits == nil {
+		return
+	}
+	m.snapshots.updateRateLimits(accountID, *update.RateLimits, m.now())
 }
 
 func (m *Multiplexer) forwardAggregatedRateLimitNotification(fallback []byte) {
