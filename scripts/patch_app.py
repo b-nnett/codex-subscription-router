@@ -47,12 +47,12 @@ OPENAI_INTERNAL_TEAM_IDENTIFIER = "HX7739G8FX"
 OPENAI_DISTRIBUTION_TEAM_IDENTIFIER = "2DC432GLL2"
 TESTED_SOURCE_BUILDS = {
     (
-        "26.803.61601",
-        "6396",
-    ): "d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf",
+        "26.814.41407",
+        "6720",
+    ): "8fba32f8baa6d984b0f0f4149d3da46221e3adb3b52836f85fe65e31e655a8c0",
 }
-EXPECTED_CUA_IDENTIFIER_REPLACEMENTS = 49
-EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS = 17
+EXPECTED_CUA_IDENTIFIER_REPLACEMENTS = 99
+EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS = 20
 
 
 def parse_args() -> argparse.Namespace:
@@ -425,11 +425,11 @@ def sanitized_runtime_entitlements(executable: Path) -> dict[str, object] | None
     """Keep runtime capabilities while removing the official app's team grants."""
     result = subprocess.run(
         ["codesign", "--display", "--entitlements", ":-", str(executable)],
-        check=True,
+        check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if not result.stdout.strip():
+    if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
         entitlements = plistlib.loads(result.stdout)
@@ -441,6 +441,9 @@ def sanitized_runtime_entitlements(executable: Path) -> dict[str, object] | None
         raise RuntimeError(f"invalid signing entitlements on {executable}")
     for key in TEAM_SCOPED_ENTITLEMENTS:
         entitlements.pop(key, None)
+    for key in list(entitlements):
+        if key.startswith("com.apple.developer."):
+            entitlements.pop(key, None)
     return entitlements or None
 
 
@@ -612,12 +615,46 @@ def sign_computer_use_code(
     )
 
 
+def remove_source_distribution_artifacts(app: Path) -> None:
+    profile = app / "Contents" / "embedded.provisionprofile"
+    if profile.is_file():
+        profile.unlink()
+    subprocess.run(
+        ["xcrun", "stapler", "unstaple", str(app)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def sign_copied_electron_runtime(app: Path, identity: str) -> None:
+    skipped = app / "Contents" / "Resources" / "cua_node"
+    bundle_suffixes = {".app", ".appex", ".bundle", ".framework", ".xpc"}
+    machos: list[Path] = []
+    bundles: list[Path] = []
+    for candidate in (app / "Contents").rglob("*"):
+        if candidate == skipped or candidate.is_relative_to(skipped):
+            continue
+        if any(part.endswith(".dSYM") for part in candidate.parts):
+            continue
+        if candidate.is_dir() and candidate.suffix in bundle_suffixes:
+            bundles.append(candidate)
+        elif is_mach_o(candidate):
+            machos.append(candidate)
+    for executable in sorted(machos, key=lambda path: len(path.parts), reverse=True):
+        sign_runtime_executable(executable, identity, runtime=False)
+    for bundle in sorted(set(bundles), key=lambda path: len(path.parts), reverse=True):
+        sign_runtime_bundle(bundle, identity, runtime=False)
+
+
 def sign_independent_app(
     app: Path, identity: str, team_identifier: str | None
 ) -> None:
     """Apply one stable identity throughout the modified Electron bundle."""
+    remove_source_distribution_artifacts(app)
     computer_use_entitlements = capture_computer_use_entitlements(app)
     patch_computer_use_identity(app, team_identifier)
+    sign_copied_electron_runtime(app, identity)
     sign_computer_use_code(app, identity, computer_use_entitlements)
     run(
         [
@@ -639,6 +676,11 @@ def sign_independent_app(
             str(app),
         ]
     )
+    leftover_profile = app / "Contents" / "embedded.provisionprofile"
+    if leftover_profile.exists():
+        raise RuntimeError(
+            f"OpenAI provisioning profile was left in the independent copy: {leftover_profile}"
+        )
 
 
 def load_or_create_token() -> str:
@@ -737,20 +779,18 @@ def patch_renderer(extracted: Path, token: str) -> None:
     component = (PROJECT_ROOT / "ui" / "account-menu.js").read_text(encoding="utf-8")
     component = component.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT))
     component = component.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
-    component_anchor = "function wXc({sidebarFooter:e,triggerButton:t})"
+    component_anchor = (
+        "function DIl(e){let t=(0,MIl.c)(253),{sidebarFooter:n,triggerButton:r}=e"
+    )
     if bundle.count(component_anchor) != 1:
         raise RuntimeError("could not find the native ChatGPT profile menu component")
     bundle = bundle.replace(component_anchor, component + "\n" + component_anchor, 1)
 
     plugin_rpc_mapping_anchors = (
-        '"list-apps":q9((e,{priority:t,source:n,timeoutMs:r,trace:i,...a})=>'
-        "e.sendRequest(`app/list`,a,",
-        '"list-installed-apps":q9((e,t)=>e.sendRequest(`app/installed`,t))',
-        '"read-apps":q9((e,t)=>e.sendRequest(`app/read`,t))',
-        '"login-mcp-server":q9((e,t)=>'
-        "e.sendRequest(`mcpServer/oauth/login`,t))",
-        '"list-mcp-server-status":K9((e,{priority:t,source:n,timeoutMs:r,'
-        "trace:i,...a})=>e.listMcpServers(a,",
+        "sendRequest(`app/list`,{cursor:i,limit:XMr,forceRefetch:t},{trace:a})",
+        "sendRequest(`app/installed`,t?{forceRefresh:!0}:{})",
+        "Qg(e,n).sendRequest(`app/read`,{appIds:t})",
+        "sendRequest(`mcpServer/oauth/login`,n)",
         "listMcpServers(e,t){let n=JSON.stringify({options:t,params:e})",
         "let i=this.sendRequest(`mcpServerStatus/list`,e,t);",
     )
@@ -761,19 +801,26 @@ def patch_renderer(extracted: Path, token: str) -> None:
             )
 
     app_server_request_anchor = (
-        "function gm(e,t,n){return n==null?h6e.sendRequest(e,t):"
-        "h6e.sendRequest(e,t,n)}"
+        "async sendRequest(e,t,n){if(this.dispatchMessage==null)throw Error("
+        "`AppServerRequestClient is missing a message dispatcher`);"
+        "return e===`config/read`?this.sendConfigReadRequest(t,n):"
+        "this.enqueueRequest(e,t,e===`plugin/list`&&n?.timeoutMs==null?"
+        "{...n,timeoutMs:Vjt}:n)}"
     )
     if bundle.count(app_server_request_anchor) != 1:
         raise RuntimeError("could not find the native app-server request bridge")
     bundle = bundle.replace(
         app_server_request_anchor,
-        "function gm(e,t,n){let r=codexMuxScopePluginRequest(e,t);"
-        "return n==null?h6e.sendRequest(e,r):h6e.sendRequest(e,r,n)}",
+        "async sendRequest(e,t,n){t=codexMuxScopePluginRequest(e,t);"
+        "if(this.dispatchMessage==null)throw Error("
+        "`AppServerRequestClient is missing a message dispatcher`);"
+        "return e===`config/read`?this.sendConfigReadRequest(t,n):"
+        "this.enqueueRequest(e,t,e===`plugin/list`&&n?.timeoutMs==null?"
+        "{...n,timeoutMs:Vjt}:n)}",
         1,
     )
 
-    profile_query_anchor = "let e=await T_.safeGet(`/wham/profiles/me`)"
+    profile_query_anchor = "let e=await Hv.safeGet(`/wham/profiles/me`)"
     if bundle.count(profile_query_anchor) != 1:
         raise RuntimeError("could not find the native profile stats request")
     bundle = bundle.replace(
@@ -783,52 +830,55 @@ def patch_renderer(extracted: Path, token: str) -> None:
         1,
     )
 
-    native_usage_modal_anchor = "function QLs(e){"
+    native_usage_modal_anchor = (
+        "function kxc(e){let t=(0,Axc.c)(20),{defaultResetCreditsOpen:n"
+    )
     if bundle.count(native_usage_modal_anchor) != 1:
         raise RuntimeError("could not find the native Usage modal component")
     bundle = bundle.replace(
         native_usage_modal_anchor,
-        "function QLs(e){CodexMuxUseResetAccountState();",
+        "function kxc(e){CodexMuxUseResetAccountState();"
+        "let t=(0,Axc.c)(20),{defaultResetCreditsOpen:n",
         1,
     )
 
     reset_query_anchor = (
-        "function l6r(){let e=(0,$F.c)(1),t;return "
+        "function A_a(){let e=(0,fH.c)(1),t;return "
         "e[0]===Symbol.for(`react.memo_cache_sentinel`)?"
-        "(t={queryKey:[`rate-limit-reset-credits`],queryFn:u6r,"
-        "refetchInterval:vm.ONE_MINUTE,staleTime:vm.FIVE_SECONDS},e[0]=t):"
-        "t=e[0],Lt(t)}"
+        "(t={queryKey:[`rate-limit-reset-credits`],queryFn:j_a,"
+        "refetchInterval:Lp.ONE_MINUTE,staleTime:Lp.FIVE_SECONDS},e[0]=t):"
+        "t=e[0],It(t)}"
     )
     if bundle.count(reset_query_anchor) != 1:
         raise RuntimeError("could not find the native reset-credit query")
     bundle = bundle.replace(
         reset_query_anchor,
-        "function l6r(){let e=window.__codexMuxResetAccountId;return Lt({"
+        "function A_a(){let e=window.__codexMuxResetAccountId;return It({"
         "queryKey:[`rate-limit-reset-credits`,e??`primary`],"
-        "queryFn:e?()=>codexMuxRateLimitResets(e):u6r,"
-        "refetchInterval:vm.ONE_MINUTE,staleTime:vm.FIVE_SECONDS})}",
+        "queryFn:e?()=>codexMuxRateLimitResets(e):j_a,"
+        "refetchInterval:Lp.ONE_MINUTE,staleTime:Lp.FIVE_SECONDS})}",
         1,
     )
 
     reset_mutation_anchor = (
-        "function d6r(){let e=(0,$F.c)(3),t=lt(),n=zO(),r;return "
-        "e[0]!==n||e[1]!==t?(r={mutationFn:f6r,onSuccess:(e,r)=>{"
+        "function M_a(){let e=(0,fH.c)(3),t=ct(),n=Lb(),r;return "
+        "e[0]!==n||e[1]!==t?(r={mutationFn:N_a,onSuccess:(e,r)=>{"
         "let{creditId:i}=r,a=e.code;if(a===`reset`||a===`already_redeemed`){"
         "let n=e.code===`reset`?e.credit?.id??i:i;"
-        "t.setQueryData([`rate-limit-reset-credits`],e=>F3r(e,a,n))}"
+        "t.setQueryData([`rate-limit-reset-credits`],e=>n_a(e,a,n))}"
         "Promise.all([n([`rate-limit-status`]),n([`rate-limit-reset-credits`])])}},"
-        "e[0]=n,e[1]=t,e[2]=r):r=e[2],$t(r)}"
+        "e[0]=n,e[1]=t,e[2]=r):r=e[2],Qt(r)}"
     )
     if bundle.count(reset_mutation_anchor) != 1:
         raise RuntimeError("could not find the native reset-credit mutation")
     bundle = bundle.replace(
         reset_mutation_anchor,
-        "function d6r(){let e=lt(),t=zO(),n=window.__codexMuxResetAccountId,"
-        "r=[`rate-limit-reset-credits`,n??`primary`];return $t({"
-        "mutationFn:n?i=>codexMuxConsumeRateLimitReset(n,i):f6r,"
+        "function M_a(){let e=ct(),t=Lb(),n=window.__codexMuxResetAccountId,"
+        "r=[`rate-limit-reset-credits`,n??`primary`];return Qt({"
+        "mutationFn:n?i=>codexMuxConsumeRateLimitReset(n,i):N_a,"
         "onSuccess:(n,i)=>{let{creditId:a}=i,o=n.code;"
         "if(o===`reset`||o===`already_redeemed`){let t=o===`reset`?"
-        "n.credit?.id??a:a;e.setQueryData(r,e=>F3r(e,o,t))}"
+        "n.credit?.id??a:a;e.setQueryData(r,e=>n_a(e,o,t))}"
         "Promise.all([t([`rate-limit-status`]),t(r)])}})}",
         1,
     )
@@ -843,30 +893,30 @@ def patch_renderer(extracted: Path, token: str) -> None:
     )
 
     usage_header_anchor = (
-        "let ve;t[46]===ge?ve=t[47]:"
-        "(ve=(0,k2.jsxs)(LL,{children:[ge,_e]}),t[46]=ge,t[47]=ve);"
+        "let _e;t[46]===he?_e=t[47]:"
+        "(_e=(0,N2.jsxs)(bz,{children:[he,ge]}),t[46]=he,t[47]=_e);"
     )
     if bundle.count(usage_header_anchor) != 1:
         raise RuntimeError("could not find the native Usage sheet header")
     bundle = bundle.replace(
         usage_header_anchor,
-        "let ve=(0,k2.jsxs)(LL,{children:[ge,_e,"
+        "let _e=(0,N2.jsxs)(bz,{children:[he,ge,"
         "window.__codexMuxResetAccountSelector??null]});",
         1,
     )
 
-    usage_anchor = "usageItems:Ge"
+    usage_anchor = "usageItems:Ct"
     if bundle.count(usage_anchor) != 1:
         raise RuntimeError("could not find the native ChatGPT usage menu slot")
     bundle = bundle.replace(
         usage_anchor,
-        "usageItems:(0,e7.jsx)(CodexMuxAccountMenu,{})",
+        "usageItems:(0,d7.jsx)(CodexMuxAccountMenu,{})",
         1,
     )
 
     open_change_anchors = (
-        "triggerButton:Ke,onOpenChange:o,children:(0,e7.jsx)(bXc",
-        "return(0,e7.jsx)(vH,{open:a,onOpenChange:o,contentWidth:`panel`",
+        "triggerButton:Dt,onOpenChange:l,children:P",
+        "open:s,onOpenChange:l,contentWidth:`panel`,triggerButton:Dt",
     )
     for anchor in open_change_anchors:
         if bundle.count(anchor) != 1:
@@ -874,8 +924,8 @@ def patch_renderer(extracted: Path, token: str) -> None:
         bundle = bundle.replace(
             anchor,
             anchor.replace(
-                "onOpenChange:o",
-                "onOpenChange:CodexMuxProfileMenuOpenChange(o)",
+                "onOpenChange:l",
+                "onOpenChange:CodexMuxProfileMenuOpenChange(l)",
             ),
             1,
         )
@@ -903,40 +953,43 @@ def patch_renderer(extracted: Path, token: str) -> None:
     profile_bundle_path = profile_bundles[0]
     profile_bundle = profile_bundle_path.read_text(encoding="utf-8")
     profile_avatar_anchor = (
-        "children:[(0,$.jsxs)(`div`,{className:`relative mb-4 size-20`,children:["
+        "children:[(0,$.jsxs)(`label`,{\"aria-disabled\":R.isPending,className:lt("
+        "`group relative flex size-20 rounded-full"
     )
     if profile_bundle.count(profile_avatar_anchor) != 1:
         raise RuntimeError("could not find the native Profile avatar")
     profile_bundle = profile_bundle.replace(
         profile_avatar_anchor,
         "children:[globalThis.CodexMuxProfileAvatarStack?.("
-        "{onSelect:()=>A.refetch()})??null,"
-        "(0,$.jsxs)(`div`,{className:"
+        "{onSelect:()=>{}})??null,"
+        "(0,$.jsxs)(`label`,{\"aria-disabled\":R.isPending,className:lt("
         "globalThis.CodexMuxProfileAvatarStack?"
-        "`hidden`:`relative mb-4 size-20`,children:[",
+        "`hidden`:`group relative flex size-20 rounded-full",
         1,
     )
 
-    profile_name_anchor = "className:`flex w-full justify-center`"
+    profile_name_anchor = (
+        "(0,$.jsx)(`h1`,{className:`text-base font-normal text-default`,children:xt})"
+    )
     if profile_bundle.count(profile_name_anchor) != 1:
         raise RuntimeError("could not find the native Profile display name")
     profile_bundle = profile_bundle.replace(
         profile_name_anchor,
-        "className:globalThis.__codexMuxSelectedProfileAccountId&&!A.isFetching?"
-        "`flex w-full justify-center`:`hidden`",
+        "(0,$.jsx)(`h1`,{className:globalThis.__codexMuxSelectedProfileAccountId?"
+        "`text-base font-normal text-default`:`hidden`,children:xt})",
         1,
     )
     profile_identity_anchor = (
-        "className:`mt-1 flex min-h-7 items-center gap-1.5 text-base leading-5 "
-        "font-normal text-token-text-tertiary`"
+        "className:`inline-flex h-6 items-center rounded-lg border border-subtle "
+        "px-[5px] text-sm leading-5 text-tertiary`"
     )
     if profile_bundle.count(profile_identity_anchor) != 1:
         raise RuntimeError("could not find the native Profile username and plan badge")
     profile_bundle = profile_bundle.replace(
         profile_identity_anchor,
-        "className:globalThis.__codexMuxSelectedProfileAccountId&&!A.isFetching?"
-        "`mt-1 flex min-h-7 items-center gap-1.5 text-base leading-5 font-normal "
-        "text-token-text-tertiary`:`hidden`",
+        "className:globalThis.__codexMuxSelectedProfileAccountId?"
+        "`inline-flex h-6 items-center rounded-lg border border-subtle "
+        "px-[5px] text-sm leading-5 text-tertiary`:`hidden`",
         1,
     )
     profile_bundle_path.write_text(profile_bundle, encoding="utf-8")
@@ -962,7 +1015,11 @@ def patch_renderer(extracted: Path, token: str) -> None:
     )
     plugin_bundle_path.write_text(plugin_bundle, encoding="utf-8")
 
-    thread_bundles = list((webview / "assets").glob("local-conversation-thread-*.js"))
+    thread_bundles = [
+        path
+        for path in (webview / "assets").glob("local-conversation-thread-*.js")
+        if "turn-entries" not in path.name
+    ]
     if len(thread_bundles) != 1:
         raise RuntimeError(
             f"expected one local conversation renderer bundle, found {len(thread_bundles)}"
@@ -976,7 +1033,7 @@ def patch_renderer(extracted: Path, token: str) -> None:
         "__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT)
     )
     thread_component = thread_component.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
-    thread_component_anchor = "function bE(){let e=(0,wE.c)(57)"
+    thread_component_anchor = "function xE(e){let t=(0,wE.c)(32)"
     if thread_bundle.count(thread_component_anchor) != 1:
         raise RuntimeError("could not find the native thread summary sources component")
     thread_bundle = thread_bundle.replace(
@@ -984,12 +1041,12 @@ def patch_renderer(extracted: Path, token: str) -> None:
         thread_component + "\n" + thread_component_anchor,
         1,
     )
-    summary_children_anchor = "children:[c,l,u,d,f,p,m,h,g,_,v,y,b,x]"
+    summary_children_anchor = "children:[l,u,d,f,p,m,h,g,_,v,y,b,x,S]"
     if thread_bundle.count(summary_children_anchor) != 1:
         raise RuntimeError("could not find the native thread summary section list")
     thread_bundle = thread_bundle.replace(
         summary_children_anchor,
-        "children:[c,l,u,d,f,(0,zE.jsx)(CodexMuxThreadSubscription,{}),p,m,h,g,_,v,y,b,x]",
+        "children:[l,u,d,f,(0,TE.jsx)(CodexMuxThreadSubscription,{}),p,m,h,g,_,v,y,b,x,S]",
         1,
     )
     thread_bundle_path.write_text(thread_bundle, encoding="utf-8")
@@ -1007,38 +1064,33 @@ def patch_desktop_profile(
 
     bootstrap_path = bootstrap_files[0]
     bootstrap = bootstrap_path.read_text(encoding="utf-8")
-    profile_pattern = re.compile(
-        r"(?P<electron>[A-Za-z_$][\w$]*)\.app\.setPath\("
-        r"`userData`,[A-Za-z_$][\w$]*\(\{"
-        r"appDataPath:(?P=electron)\.app\.getPath\(`appData`\),"
-        r"buildFlavor:[^,}]+,env:process\.env\}\)\)"
+    profile_anchor = (
+        "a.app.setPath(`userData`,ee({appDataPath:a.app.getPath(`appData`),"
+        "buildFlavor:X,env:process.env}))"
     )
-
-    def replacement(match: re.Match[str]) -> str:
-        electron = match.group("electron")
-        computer_use_pipe = json.dumps(str(DEFAULT_STATE_ROOT / "computer-use.sock"))
-        computer_use_app = json.dumps(str(installed_computer_use_app))
-        return (
-            f"process.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH={computer_use_pipe};"
-            f"process.env.SKY_CUA_SERVICE_PATH={computer_use_app};"
-            f"process.env.CODEX_ELECTRON_COMPUTER_USE_APP_PATH={computer_use_app};"
-            "process.env.CODEX_ELECTRON_SKIP_COMPUTER_USE_CANONICAL_REFRESH=`1`;"
-            f"{electron}.app.setPath(`userData`,"
-            f"{electron}.app.getPath(`appData`)+`/{DESKTOP_PROFILE_NAME}`)"
-        )
-
-    bootstrap, replacements = profile_pattern.subn(replacement, bootstrap, count=1)
-    if replacements != 1:
+    if bootstrap.count(profile_anchor) != 1:
         raise RuntimeError("could not isolate the copied ChatGPT desktop profile")
+    computer_use_pipe = json.dumps(str(DEFAULT_STATE_ROOT / "computer-use.sock"))
+    computer_use_app = json.dumps(str(installed_computer_use_app))
+    bootstrap = bootstrap.replace(
+        profile_anchor,
+        "process.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH="
+        f"{computer_use_pipe};"
+        "process.env.SKY_CUA_SERVICE_PATH="
+        f"{computer_use_app};"
+        "process.env.CODEX_ELECTRON_COMPUTER_USE_APP_PATH="
+        f"{computer_use_app};"
+        "process.env.CODEX_ELECTRON_SKIP_COMPUTER_USE_CANONICAL_REFRESH=`1`;"
+        "a.app.setPath(`userData`,"
+        f"a.app.getPath(`appData`)+`/{DESKTOP_PROFILE_NAME}`)",
+        1,
+    )
 
     # The copied app must never replace itself with an unpatched official update.
-    updater_pattern = re.compile(
-        r"await [A-Za-z_$][\w$]*\.initialize\(\);"
-        r"(?=try\{let\{runMainAppStartup:)"
-    )
-    bootstrap, updater_replacements = updater_pattern.subn("", bootstrap, count=1)
-    if updater_replacements != 1:
+    updater_anchor = "await o.initialize();"
+    if bootstrap.count(updater_anchor) != 1:
         raise RuntimeError("could not disable updates in the copied ChatGPT app")
+    bootstrap = bootstrap.replace(updater_anchor, "", 1)
     bootstrap_path.write_text(bootstrap, encoding="utf-8")
 
     main_files = list((extracted / ".vite" / "build").glob("main-*.js"))

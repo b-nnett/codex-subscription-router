@@ -24,11 +24,11 @@ async function codexMuxRequest(path, options = {}) {
 }
 
 const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
-  "list-apps",
-  "list-installed-apps",
-  "read-apps",
-  "list-mcp-server-status",
-  "login-mcp-server",
+  "app/list",
+  "app/installed",
+  "app/read",
+  "mcpServerStatus/list",
+  "mcpServer/oauth/login",
 ]);
 
 function codexMuxScopePluginRequest(method, params) {
@@ -75,7 +75,7 @@ async function codexMuxConsumeRateLimitReset(accountId, input) {
 function CodexMuxUsageModal({
   onClose,
 }) {
-  return (0, e7.jsx)(QLs, {
+  return (0, d7.jsx)(kxc, {
     defaultResetCreditsOpen: true,
     initialAvailableCount: 0,
     isRateLimitReached: false,
@@ -88,12 +88,12 @@ function CodexMuxUseResetAccountState() {
   const cachedAccounts = (globalThis.__codexMuxConnectedAccounts || []).filter(
     (account) => account.connected && account.enabled,
   );
-  const [accounts, setAccounts] = kXc.useState(cachedAccounts);
-  const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [resetCounts, setResetCounts] = kXc.useState({});
-  const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
+  const [accounts, setAccounts] = NIl.useState(cachedAccounts);
+  const [selectedId, setSelectedId] = NIl.useState("primary");
+  const [resetCounts, setResetCounts] = NIl.useState({});
+  const [loading, setLoading] = NIl.useState(cachedAccounts.length === 0);
 
-  const loadAccounts = kXc.useCallback(async () => {
+  const loadAccounts = NIl.useCallback(async () => {
     const result = await codexMuxRequest("/accounts");
     const connected = (result.accounts || []).filter(
       (account) => account.connected && account.enabled,
@@ -118,11 +118,11 @@ function CodexMuxUseResetAccountState() {
     setResetCounts(Object.fromEntries(entries));
   }, []);
 
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     loadAccounts().catch(() => setLoading(false));
   }, [loadAccounts]);
 
-  kXc.useEffect(
+  NIl.useEffect(
     () => () => {
       delete window.__codexMuxResetAccountId;
       delete window.__codexMuxSelectedUsageWindows;
@@ -138,7 +138,7 @@ function CodexMuxUseResetAccountState() {
   window.__codexMuxSelectedUsageWindows = selected
     ? codexMuxUsageWindows(selected.rateLimits)
     : null;
-  window.__codexMuxResetAccountSelector = (0, e7.jsx)(
+  window.__codexMuxResetAccountSelector = (0, d7.jsx)(
     CodexMuxResetAccountSelector,
     {
       accounts,
@@ -158,26 +158,26 @@ function CodexMuxResetAccountSelector({
   resetCounts,
   selectedId,
 }) {
-  return (0, e7.jsxs)("div", {
+  return (0, d7.jsxs)("div", {
     className: "pt-4",
     children: [
-      (0, e7.jsx)("div", {
+      (0, d7.jsx)("div", {
         className:
           "mb-2 px-1 text-xs font-medium text-token-text-secondary",
         children: "Subscription",
       }),
-      (0, e7.jsx)("div", {
+      (0, d7.jsx)("div", {
         className:
           "flex flex-wrap gap-2 rounded-2xl border border-token-border p-2",
         children: loading
-          ? (0, e7.jsx)("div", {
+          ? (0, d7.jsx)("div", {
               className: "px-2 py-2 text-sm text-token-text-secondary",
               children: "Loading subscriptions…",
             })
           : accounts.map((account) => {
               const selected = account.id === selectedId;
               const count = resetCounts[account.id];
-              return (0, e7.jsxs)(
+              return (0, d7.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -191,21 +191,21 @@ function CodexMuxResetAccountSelector({
                   "aria-pressed": selected,
                   onClick: () => onSelect(account.id),
                   children: [
-                    (0, e7.jsx)(CodexMuxAccountAvatar, {
+                    (0, d7.jsx)(CodexMuxAccountAvatar, {
                       imageUrl: account.profileImageUrl,
                       label: account.label,
                       className: "size-7",
                     }),
-                    (0, e7.jsxs)("span", {
+                    (0, d7.jsxs)("span", {
                       className: "flex min-w-0 flex-col",
                       children: [
-                        (0, e7.jsx)("span", {
+                        (0, d7.jsx)("span", {
                           className: "max-w-40 truncate text-sm font-medium",
                           children: account.planLabel
                             ? `${account.label} · ${account.planLabel}`
                             : account.label,
                         }),
-                        (0, e7.jsx)("span", {
+                        (0, d7.jsx)("span", {
                           className: "text-xs text-token-text-tertiary",
                           children:
                             count == null
@@ -227,16 +227,16 @@ function CodexMuxResetAccountSelector({
 }
 
 function CodexMuxAccountMenu() {
-  const modalScope = Lo(Q);
-  const [accounts, setAccounts] = kXc.useState([]);
-  const [loading, setLoading] = kXc.useState(true);
-  const [busy, setBusy] = kXc.useState(false);
-  const [error, setError] = kXc.useState("");
-  const [login, setLogin] = kXc.useState(null);
-  const [codeCopied, setCodeCopied] = kXc.useState(false);
+  const modalScope = Ss(Q);
+  const [accounts, setAccounts] = NIl.useState([]);
+  const [loading, setLoading] = NIl.useState(true);
+  const [busy, setBusy] = NIl.useState(false);
+  const [error, setError] = NIl.useState("");
+  const [login, setLogin] = NIl.useState(null);
+  const [codeCopied, setCodeCopied] = NIl.useState(false);
   const loginAccountId = login?.accountId || null;
 
-  const refresh = kXc.useCallback(async () => {
+  const refresh = NIl.useCallback(async () => {
     try {
       const result = await codexMuxRequest("/accounts");
       const nextAccounts = result.accounts || [];
@@ -252,7 +252,7 @@ function CodexMuxAccountMenu() {
     }
   }, []);
 
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     refresh();
     const events = new EventSource(
       `${CODEX_MUX_API}/events?token=${encodeURIComponent(CODEX_MUX_TOKEN)}`,
@@ -283,7 +283,7 @@ function CodexMuxAccountMenu() {
     };
   }, [refresh, loginAccountId]);
 
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     if (!login) return;
     const allowEscapeDismissal = (event) => {
       if (event.key !== "Escape") return;
@@ -367,16 +367,16 @@ function CodexMuxAccountMenu() {
 
   const rows = [];
   rows.push(
-    (0, e7.jsx)(
-      _H,
+    (0, d7.jsx)(
+      rL,
       {
-        LeftIcon: S2,
+        LeftIcon: z2,
         SubText: loading
           ? "Connecting subscriptions…"
           : connected.length === 1
             ? "1 connected subscription"
             : `${connected.length} connected subscriptions`,
-        rightIcon: (0, e7.jsx)("span", {
+        rightIcon: (0, d7.jsx)("span", {
           className: "text-token-description-foreground tabular-nums",
           children: loading
             ? "…"
@@ -384,7 +384,7 @@ function CodexMuxAccountMenu() {
               ? `${Math.round(totalRemaining)}%`
               : "–",
         }),
-        onSelect: () => BW(modalScope, CodexMuxUsageModal, {}),
+        onSelect: () => Tz(modalScope, CodexMuxUsageModal, {}),
         children: "Usage remaining",
       },
       "codex-mux-total",
@@ -392,7 +392,7 @@ function CodexMuxAccountMenu() {
   );
   if (connected.length > 0) {
     rows.push(
-      (0, e7.jsx)(CH.Separator, {}, "codex-mux-accounts-separator"),
+      (0, d7.jsx)(lL.Separator, {}, "codex-mux-accounts-separator"),
     );
   }
 
@@ -400,20 +400,20 @@ function CodexMuxAccountMenu() {
     const weekly = codexMuxWeeklyWindow(account.rateLimits);
     const remaining = weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
     rows.push(
-      (0, e7.jsx)(
-        _H,
+      (0, d7.jsx)(
+        rL,
         {
           LeftIcon: (iconProps) =>
-            (0, e7.jsx)(CodexMuxAccountAvatar, {
+            (0, d7.jsx)(CodexMuxAccountAvatar, {
               ...iconProps,
               imageUrl: account.profileImageUrl,
               label: account.label,
             }),
           SubText: account.email
-            ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
+            ? (0, d7.jsx)(CodexMuxMaskedEmail, { email: account.email })
             : account.planType || "ChatGPT subscription",
           className: "group",
-          rightIcon: (0, e7.jsx)("span", {
+          rightIcon: (0, d7.jsx)("span", {
             className: "text-token-description-foreground tabular-nums",
             children: remaining == null ? "–" : `${Math.round(remaining)}%`,
           }),
@@ -428,8 +428,8 @@ function CodexMuxAccountMenu() {
 
   if (login) {
     rows.push(
-      (0, e7.jsx)(
-        _H,
+      (0, d7.jsx)(
+        rL,
         {
           LeftIcon: CodexMuxCopyIcon,
           SubText: login.userCode
@@ -447,10 +447,10 @@ function CodexMuxAccountMenu() {
 
   if (error) {
     rows.push(
-      (0, e7.jsx)(
-        _H,
+      (0, d7.jsx)(
+        rL,
         {
-          LeftIcon: S2,
+          LeftIcon: z2,
           SubText: error,
           tone: "danger",
           allowWrap: true,
@@ -464,8 +464,8 @@ function CodexMuxAccountMenu() {
 
   if (!loading) {
     rows.push(
-      (0, e7.jsx)(
-        _H,
+      (0, d7.jsx)(
+        rL,
         {
           LeftIcon: CodexMuxPlusIcon,
           onSelect: addSubscription,
@@ -475,8 +475,8 @@ function CodexMuxAccountMenu() {
       ),
     );
   }
-  rows.push((0, e7.jsx)(CH.Separator, {}, "codex-mux-separator"));
-  return (0, e7.jsx)(e7.Fragment, { children: rows });
+  rows.push((0, d7.jsx)(lL.Separator, {}, "codex-mux-separator"));
+  return (0, d7.jsx)(d7.Fragment, { children: rows });
 }
 
 function codexMuxWeeklyWindow(rateLimits) {
@@ -500,12 +500,12 @@ function codexMuxUsageWindows(rateLimits) {
 }
 
 function CodexMuxPlusIcon(props) {
-  return (0, e7.jsx)("svg", {
+  return (0, d7.jsx)("svg", {
     viewBox: "0 0 20 20",
     fill: "none",
     "aria-hidden": true,
     ...props,
-    children: (0, e7.jsx)("path", {
+    children: (0, d7.jsx)("path", {
       d: "M10 4.25v11.5M4.25 10h11.5",
       stroke: "currentColor",
       strokeWidth: 1.5,
@@ -515,14 +515,14 @@ function CodexMuxPlusIcon(props) {
 }
 
 function CodexMuxCopyIcon(props) {
-  return (0, e7.jsx)("svg", {
+  return (0, d7.jsx)("svg", {
     viewBox: "0 0 20 20",
     fill: "none",
     "aria-hidden": true,
     ...props,
-    children: (0, e7.jsxs)(e7.Fragment, {
+    children: (0, d7.jsxs)(d7.Fragment, {
       children: [
-        (0, e7.jsx)("rect", {
+        (0, d7.jsx)("rect", {
           x: 6.25,
           y: 6.25,
           width: 9.5,
@@ -531,7 +531,7 @@ function CodexMuxCopyIcon(props) {
           stroke: "currentColor",
           strokeWidth: 1.5,
         }),
-        (0, e7.jsx)("path", {
+        (0, d7.jsx)("path", {
           d: "M13.75 6.25V6A1.75 1.75 0 0 0 12 4.25H6A1.75 1.75 0 0 0 4.25 6v6c0 .97.78 1.75 1.75 1.75h.25",
           stroke: "currentColor",
           strokeWidth: 1.5,
@@ -543,13 +543,13 @@ function CodexMuxCopyIcon(props) {
 }
 
 function CodexMuxMaskedEmail({ email }) {
-  return (0, e7.jsxs)(e7.Fragment, {
+  return (0, d7.jsxs)(d7.Fragment, {
     children: [
-      (0, e7.jsx)("span", {
+      (0, d7.jsx)("span", {
         className: "group-hover:hidden",
         children: "••••••••",
       }),
-      (0, e7.jsx)("span", {
+      (0, d7.jsx)("span", {
         className: "hidden group-hover:inline",
         children: email,
       }),
@@ -558,10 +558,10 @@ function CodexMuxMaskedEmail({ email }) {
 }
 
 function CodexMuxAccountAvatar({ imageUrl, label, className }) {
-  const [failed, setFailed] = kXc.useState(false);
+  const [failed, setFailed] = NIl.useState(false);
   const resolvedImageUrl = jLa(imageUrl || null);
   if (resolvedImageUrl && !failed) {
-    return (0, e7.jsx)("img", {
+    return (0, d7.jsx)("img", {
       src: resolvedImageUrl,
       alt: "",
       className: `${className || "icon-sm"} rounded-full object-cover`,
@@ -575,7 +575,7 @@ function CodexMuxAccountAvatar({ imageUrl, label, className }) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("");
-  return (0, e7.jsx)("span", {
+  return (0, d7.jsx)("span", {
     className: `${className || "icon-sm"} flex items-center justify-center rounded-full bg-token-charts-purple/10 text-[9px] leading-none text-token-charts-purple`,
     "aria-hidden": true,
     children: initials || "?",
@@ -584,17 +584,17 @@ function CodexMuxAccountAvatar({ imageUrl, label, className }) {
 
 function CodexMuxOverlappingAvatars({ accounts, size = "size-20" }) {
   const overlapClass = size === "size-20" ? "-ml-10" : "-ml-2";
-  return (0, e7.jsx)("div", {
+  return (0, d7.jsx)("div", {
     className: "flex items-center justify-center",
     children: accounts.map((account, index) =>
-      (0, e7.jsx)(
+      (0, d7.jsx)(
         "span",
         {
           className: `${index === 0 ? "" : overlapClass} rounded-full border-4 border-token-bg-primary`,
           title: account.planLabel
             ? `${account.label} · ${account.planLabel}`
             : account.label,
-          children: (0, e7.jsx)(CodexMuxAccountAvatar, {
+          children: (0, d7.jsx)(CodexMuxAccountAvatar, {
             imageUrl: account.profileImageUrl,
             label: account.label,
             className: size,
@@ -607,13 +607,13 @@ function CodexMuxOverlappingAvatars({ accounts, size = "size-20" }) {
 }
 
 function CodexMuxProfileAvatarStack({ onSelect }) {
-  const [accounts, setAccounts] = kXc.useState(
+  const [accounts, setAccounts] = NIl.useState(
     globalThis.__codexMuxCombinedProfileAccounts || [],
   );
-  const [selectedId, setSelectedId] = kXc.useState(
+  const [selectedId, setSelectedId] = NIl.useState(
     globalThis.__codexMuxSelectedProfileAccountId || null,
   );
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     let live = true;
     codexMuxRequest("/accounts")
       .then((result) => {
@@ -629,7 +629,7 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
       live = false;
     };
   }, []);
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     globalThis.__codexMuxSelectedProfileAccountId = null;
     setSelectedId(null);
     onSelect?.();
@@ -641,15 +641,15 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
   const visibleAccounts = selectedId
     ? accounts.filter((account) => account.id === selectedId)
     : accounts;
-  return (0, e7.jsx)("div", {
+  return (0, d7.jsx)("div", {
     className: "mb-4",
     "aria-label": selectedId
       ? "Selected subscription profile"
       : `${accounts.length} connected subscriptions`,
-    children: (0, e7.jsx)("div", {
+    children: (0, d7.jsx)("div", {
       className: "flex items-center justify-center",
       children: visibleAccounts.map((account, index) =>
-        (0, e7.jsx)(
+        (0, d7.jsx)(
           "button",
           {
             type: "button",
@@ -670,7 +670,7 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
               setSelectedId(nextId);
               onSelect?.();
             },
-            children: (0, e7.jsx)(CodexMuxAccountAvatar, {
+            children: (0, d7.jsx)(CodexMuxAccountAvatar, {
               imageUrl: account.profileImageUrl,
               label: account.label,
               className: "size-20",
@@ -684,11 +684,11 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
 }
 
 function CodexMuxPluginScope() {
-  const [accounts, setAccounts] = kXc.useState([]);
-  const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [loading, setLoading] = kXc.useState(true);
-  const queryClient = lt();
-  kXc.useEffect(() => {
+  const [accounts, setAccounts] = NIl.useState([]);
+  const [selectedId, setSelectedId] = NIl.useState("primary");
+  const [loading, setLoading] = NIl.useState(true);
+  const queryClient = ct();
+  NIl.useEffect(() => {
     let live = true;
     codexMuxRequest("/accounts")
       .then((result) => {
@@ -708,7 +708,7 @@ function CodexMuxPluginScope() {
     };
   }, []);
 
-  kXc.useEffect(() => {
+  NIl.useEffect(() => {
     globalThis.__codexMuxPluginAccountId = selectedId;
     return () => {
       delete globalThis.__codexMuxPluginAccountId;
@@ -730,18 +730,18 @@ function CodexMuxPluginScope() {
   const selected =
     accounts.find((account) => account.id === selectedId) || accounts[0] || null;
 
-  return (0, e7.jsxs)("div", {
+  return (0, d7.jsxs)("div", {
     className:
       "mb-5 rounded-2xl border border-token-border-light p-3",
     children: [
-      (0, e7.jsxs)("div", {
+      (0, d7.jsxs)("div", {
         className: "px-1",
         children: [
-          (0, e7.jsx)("div", {
+          (0, d7.jsx)("div", {
             className: "text-sm font-medium text-token-text-primary",
             children: "Plugin connections",
           }),
-          (0, e7.jsx)("div", {
+          (0, d7.jsx)("div", {
             className: "mt-0.5 text-xs text-token-text-secondary",
             children: selected
               ? `Installs are shared. Connection access below is for ${selected.label}.`
@@ -750,15 +750,15 @@ function CodexMuxPluginScope() {
         ],
       }),
       loading
-        ? (0, e7.jsx)("div", {
+        ? (0, d7.jsx)("div", {
             className: "mt-3 px-1 text-sm text-token-text-tertiary",
             children: "Loading subscriptions…",
           })
-        : (0, e7.jsx)("div", {
+        : (0, d7.jsx)("div", {
             className: "mt-3 flex flex-wrap gap-2",
             children: accounts.map((account) => {
               const active = account.id === selected?.id;
-              return (0, e7.jsxs)(
+              return (0, d7.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -771,12 +771,12 @@ function CodexMuxPluginScope() {
                   "aria-pressed": active,
                   onClick: () => selectAccount(account.id),
                   children: [
-                    (0, e7.jsx)(CodexMuxAccountAvatar, {
+                    (0, d7.jsx)(CodexMuxAccountAvatar, {
                       imageUrl: account.profileImageUrl,
                       label: account.label,
                       className: "size-7",
                     }),
-                    (0, e7.jsx)("span", {
+                    (0, d7.jsx)("span", {
                       children: account.planLabel
                         ? `${account.label} · ${account.planLabel}`
                         : account.label,
@@ -797,6 +797,6 @@ function CodexMuxPluginScope() {
 globalThis.CodexMuxAccountAvatar = CodexMuxAccountAvatar;
 globalThis.codexMuxProfileData = codexMuxProfileData;
 globalThis.CodexMuxProfileAvatarStack = (props) =>
-  (0, e7.jsx)(CodexMuxProfileAvatarStack, props || {});
+  (0, d7.jsx)(CodexMuxProfileAvatarStack, props || {});
 globalThis.CodexMuxPluginScope = () =>
-  (0, e7.jsx)(CodexMuxPluginScope, {});
+  (0, d7.jsx)(CodexMuxPluginScope, {});
