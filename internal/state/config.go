@@ -69,6 +69,25 @@ func readConfig(path string) ([]byte, error) {
 	return contents, err
 }
 
+func TopLevelConfigValue(contents []byte, key string) string {
+	for _, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			return ""
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(name) != key {
+			continue
+		}
+		value = strings.TrimSpace(strings.SplitN(value, "#", 2)[0])
+		return strings.Trim(strings.TrimSpace(value), `"'`)
+	}
+	return ""
+}
+
 func filterConfig(contents []byte, keep func(section string) bool) string {
 	var builder strings.Builder
 	section := ""

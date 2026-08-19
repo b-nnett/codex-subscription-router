@@ -197,6 +197,7 @@ starts another sign-in.
 | Owner depleted | Continued through another account with capacity |
 | Every account depleted | Combined quota alert with the next known reset |
 | Account disabled | Excluded from routing and pooled usable quota |
+| Custom provider or non-OpenAI base URL | Sent through the account's configured Codex provider without pooled ChatGPT quota |
 
 The subscription assigned to the current thread appears in its pinned summary.
 
