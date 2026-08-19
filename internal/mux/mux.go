@@ -222,6 +222,12 @@ func (m *Multiplexer) handleClientNotification(message protocol.Message) {
 func (m *Multiplexer) routeNewThread(message protocol.Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
+	if controller, ok := m.store.Controller(); ok && accountBypassesChatGPTQuota(message.Params, controller) {
+		if err := m.forward(controller.ID, message); err != nil {
+			m.write(protocol.Failure(message.ID, -32021, err.Error()))
+		}
+		return
+	}
 	account, reason, err := m.chooseAccount(ctx)
 	if err != nil {
 		if errors.Is(err, errNoSubscriptionCapacity) {
@@ -320,6 +326,12 @@ func (m *Multiplexer) routeAggregatedRateLimits(message protocol.Message) {
 }
 
 func (m *Multiplexer) routeTurnStart(message protocol.Message, threadID, ownerID string) {
+	if owner, ok := m.store.Account(ownerID); ok && accountBypassesChatGPTQuota(message.Params, owner) {
+		if err := m.forward(ownerID, message); err != nil {
+			m.write(protocol.Failure(message.ID, -32023, err.Error()))
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*requestTimeout)
 	defer cancel()
 	snapshot, err := m.accountSnapshotWithProfile(ctx, ownerID, false)
@@ -447,6 +459,11 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 		m.externalMu.Unlock()
 		if ok {
 			if route.method == "turn/start" && isUsageLimitResponse(message) {
+				if owner, ok := m.store.Account(route.accountID); ok && accountBypassesChatGPTQuota(route.message.Params, owner) {
+					message.ID = route.message.ID
+					m.write(message)
+					return
+				}
 				go m.retryTurnAfterUsageLimit(route, inbound.AccountID)
 				return
 			}
