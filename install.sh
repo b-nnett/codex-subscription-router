@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+readonly HOMEBREW_NODE_22="/opt/homebrew/opt/node@22/bin"
+if [ -x "${HOMEBREW_NODE_22}/node" ]; then
+    PATH="${HOMEBREW_NODE_22}:${PATH}"
+    export PATH
+fi
+
 readonly REPOSITORY_URL="https://github.com/b-nnett/codex-subscription-router.git"
 readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
@@ -125,16 +131,20 @@ main() {
     log "Installing locked build tools"
     npm ci --ignore-scripts --no-audit --no-fund
 
-    local patch_arguments=()
+    local force_argument=""
     if [ -d "${DESTINATION_APP}" ] || [ -d "${DESTINATION_HELPER}" ]; then
         log "Stopping the existing installation"
         stop_bundle_processes "${DESTINATION_APP}"
         stop_bundle_processes "${DESTINATION_HELPER}"
-        patch_arguments+=("--force")
+        force_argument="--force"
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    if [ -n "${force_argument}" ]; then
+        python3 scripts/patch_app.py "${force_argument}"
+    else
+        python3 scripts/patch_app.py
+    fi
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"
