@@ -46,9 +46,10 @@ The patcher extracts `app.asar`, verifies exact upstream anchors, inserts the
 account UI, disables self-update, and repacks the archive with an updated
 integrity hash. The app receives a separate Chromium profile and URL scheme.
 
-The copied Computer Use service, Node runtime, and callers are re-signed under
-one Apple team. The helper uses a separate bundle identity and socket, avoiding
-the official app's privacy grants and app-group container.
+The copied Computer Use service, Node runtime, client, real Codex app-server,
+and desktop callers are re-signed under one Apple team. The helper uses a
+separate bundle identity and socket, avoiding the official app's privacy grants
+and app-group container.
 
 ## Plugin behavior
 

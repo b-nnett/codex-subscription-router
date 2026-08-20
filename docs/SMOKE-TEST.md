@@ -12,6 +12,8 @@ signature and reuse the same Apple team as the previous installed build.
   `codesign --verify --deep --strict`.
 - Confirm the installed app and helper report the intended bundle IDs and the
   same `TeamIdentifier`.
+- Confirm `Contents/Resources/codex.real` also reports that same
+  `TeamIdentifier`; Computer Use authenticates its responsible-process chain.
 
 ## Accounts and routing
 

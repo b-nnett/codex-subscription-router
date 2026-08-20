@@ -725,6 +725,13 @@ def sign_independent_app(
         expected_cua_identifier_replacements,
     )
     sign_computer_use_code(app, identity, computer_use_entitlements)
+    real_codex = app / "Contents" / "Resources" / "codex.real"
+    if not real_codex.is_file():
+        raise RuntimeError("the original Codex app-server binary is missing")
+    # Computer Use authenticates the responsible process chain. The real
+    # app-server launches its client, so it must use the same team as the
+    # independently signed desktop, helper, and client rather than OpenAI's.
+    sign_runtime_executable(real_codex, identity, "codex")
     run(
         [
             "codesign",
@@ -1550,6 +1557,11 @@ def patch_app(
         verify_signed_code(
             staged_app,
             DESKTOP_BUNDLE_IDENTIFIER,
+            team_identifier,
+        )
+        verify_signed_code(
+            staged_app / "Contents" / "Resources" / "codex.real",
+            "codex",
             team_identifier,
         )
         verify_signed_code(

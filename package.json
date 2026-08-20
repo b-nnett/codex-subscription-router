@@ -19,7 +19,7 @@
     "check": "npm run check:go && npm run check:js && npm run check:python && npm run check:shell",
     "check:go": "go test ./... && go vet ./...",
     "check:js": "node --check ui/account-menu.js && node --check ui/thread-subscription.js && node --check ui/ui-test-bridge.cjs",
-    "check:python": "python3 -m py_compile scripts/patch_app.py scripts/check_release.py",
+    "check:python": "python3 -m py_compile scripts/patch_app.py scripts/patch_app_test.py scripts/check_release.py && python3 -m unittest scripts.patch_app_test",
     "check:shell": "bash -n install.sh",
     "release:check": "python3 scripts/check_release.py"
   },

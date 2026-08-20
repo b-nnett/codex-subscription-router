@@ -30,6 +30,7 @@ REQUIRED_FILES = (
     "docs/SMOKE-TEST.md",
     "package-lock.json",
     "package.json",
+    "scripts/patch_app_test.py",
 )
 CURATED_SCREENSHOTS = (
     "screenshots/account-menu.png",
