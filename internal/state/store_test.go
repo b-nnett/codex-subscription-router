@@ -156,6 +156,45 @@ func TestSyncManagedConfigPropagatesPluginsWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestAccountHomeSharesComputerUseClientWithoutSharingSessionData(t *testing.T) {
+	root := t.TempDir()
+	primaryHome := filepath.Join(root, "primary")
+	managedComputerUseApp := filepath.Join(root, "managed", "Codex Computer Use.app")
+	if err := os.MkdirAll(managedComputerUseApp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SKY_CUA_SERVICE_PATH", managedComputerUseApp)
+
+	store, err := Open(filepath.Join(root, "mux"), primaryHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	isolatedComputerUseRoot := filepath.Join(account.CodexHome, "computer-use")
+	sharedApp := filepath.Join(isolatedComputerUseRoot, "Codex Computer Use.app")
+	info, err := os.Lstat(sharedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("Computer Use app is not shared through a symlink: %s", sharedApp)
+	}
+	target, err := os.Readlink(sharedApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != managedComputerUseApp {
+		t.Fatalf("Computer Use app points to %q, want %q", target, managedComputerUseApp)
+	}
+	if info, err := os.Stat(isolatedComputerUseRoot); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("isolated Computer Use state is not owner-only: info=%v err=%v", info, err)
+	}
+}
+
 func TestUpdateAccountPreservesController(t *testing.T) {
 	root := t.TempDir()
 	store, err := Open(root, filepath.Join(root, "primary"))

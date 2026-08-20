@@ -36,6 +36,9 @@ The Primary account uses `~/.codex`. Added accounts use
 `~/.codex-mux/accounts/<id>/codex-home`. Managed configuration is copied from
 the Primary account, excluding credential-store settings and project trust.
 Each isolated account forces file-backed CLI and MCP OAuth credentials.
+Its owner-only `computer-use` directory links only the independently signed,
+desktop-managed Computer Use app bundle. Computer Use configuration and session
+records remain inside the isolated account home.
 
 ## Desktop integration
 
