@@ -177,6 +177,14 @@ function CodexMuxResetAccountSelector({
           : accounts.map((account) => {
               const selected = account.id === selectedId;
               const count = resetCounts[account.id];
+              const short = codexMuxFiveHourWindow(account.rateLimits);
+              const weekly = codexMuxWeeklyWindow(account.rateLimits);
+              const remaining =
+                short == null ? null : Math.max(0, 100 - short.usedPercent);
+              const weeklyRemaining =
+                weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
+              const resetTime = codexMuxFormatResetTime(short?.resetsAt);
+              const weeklyResetTime = codexMuxFormatResetTime(weekly?.resetsAt);
               return (0, e7.jsxs)(
                 "button",
                 {
@@ -205,14 +213,28 @@ function CodexMuxResetAccountSelector({
                             ? `${account.label} · ${account.planLabel}`
                             : account.label,
                         }),
+                        (0, e7.jsxs)("span", {
+                          className: "text-xs text-token-text-tertiary",
+                          children: [
+                            remaining == null ? "5h unavailable" : `${Math.round(remaining)}% of 5h remaining`,
+                            resetTime ? ` · resets ${resetTime}` : "",
+                          ],
+                        }),
+                        (0, e7.jsxs)("span", {
+                          className: "text-xs text-token-text-tertiary",
+                          children: [
+                            weeklyRemaining == null ? "Weekly unavailable" : `${Math.round(weeklyRemaining)}% weekly remaining`,
+                            weeklyResetTime ? ` · resets ${weeklyResetTime}` : "",
+                          ],
+                        }),
                         (0, e7.jsx)("span", {
                           className: "text-xs text-token-text-tertiary",
                           children:
                             count == null
-                              ? "Resets unavailable"
+                              ? "Limit resets unavailable"
                               : count === 1
-                                ? "1 reset available"
-                                : `${count} resets available`,
+                                ? "1 manual reset available"
+                                : `${count} manual resets available`,
                         }),
                       ],
                     }),
@@ -397,8 +419,14 @@ function CodexMuxAccountMenu() {
   }
 
   for (const account of connected) {
+    const short = codexMuxFiveHourWindow(account.rateLimits);
     const weekly = codexMuxWeeklyWindow(account.rateLimits);
-    const remaining = weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
+    const remaining =
+      short == null ? null : Math.max(0, 100 - short.usedPercent);
+    const resetTime = codexMuxFormatResetTime(short?.resetsAt);
+    const weeklyRemaining =
+      weekly == null ? null : Math.max(0, 100 - weekly.usedPercent);
+    const weeklyResetTime = codexMuxFormatResetTime(weekly?.resetsAt);
     rows.push(
       (0, e7.jsx)(
         _H,
@@ -409,13 +437,35 @@ function CodexMuxAccountMenu() {
               imageUrl: account.profileImageUrl,
               label: account.label,
             }),
-          SubText: account.email
-            ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
-            : account.planType || "ChatGPT subscription",
+          SubText: (0, e7.jsxs)("span", {
+            children: [
+              account.email
+                ? (0, e7.jsx)(CodexMuxMaskedEmail, { email: account.email })
+                : account.planType || "ChatGPT subscription",
+            ],
+          }),
           className: "group",
           rightIcon: (0, e7.jsx)("span", {
-            className: "text-token-description-foreground tabular-nums",
-            children: remaining == null ? "–" : `${Math.round(remaining)}%`,
+            className: "min-w-28 text-right text-xs leading-4 text-token-description-foreground tabular-nums",
+            children: (0, e7.jsxs)("span", {
+              children: [
+                (0, e7.jsx)("span", {
+                  className: "block",
+                  children: remaining == null ? "– 5h" : `${Math.round(remaining)}% 5h`,
+                }),
+                (0, e7.jsx)("span", {
+                  className: "block text-token-text-tertiary",
+                  children: weeklyRemaining == null ? "– weekly" : `${Math.round(weeklyRemaining)}% weekly`,
+                }),
+                resetTime || weeklyResetTime
+                  ? (0, e7.jsx)("span", {
+                      className: "block max-w-36 truncate text-token-text-tertiary",
+                      title: `5h resets ${resetTime || "unknown"}; weekly resets ${weeklyResetTime || "unknown"}`,
+                      children: `5h ${resetTime || "—"} · W ${weeklyResetTime || "—"}`,
+                    })
+                  : null,
+              ],
+            }),
           }),
           children: account.planLabel
             ? `${account.label} · ${account.planLabel}`
@@ -486,6 +536,31 @@ function codexMuxWeeklyWindow(rateLimits) {
       (left.windowDurationMins || 0) - (right.windowDurationMins || 0),
   );
   return windows.at(-1) || null;
+}
+
+function codexMuxFiveHourWindow(rateLimits) {
+  const windows = [rateLimits?.primary, rateLimits?.secondary].filter(Boolean);
+  const exact = windows.find((window) => window.windowDurationMins === 300);
+  if (exact) return exact;
+  windows.sort(
+    (left, right) =>
+      (left.windowDurationMins || 0) - (right.windowDurationMins || 0),
+  );
+  return windows.length > 1 || (windows[0]?.windowDurationMins || 0) <= 300
+    ? windows[0] || null
+    : null;
+}
+
+function codexMuxFormatResetTime(resetsAt) {
+  if (resetsAt == null) return "";
+  const date = new Date(resetsAt * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function codexMuxUsageWindows(rateLimits) {

@@ -172,3 +172,43 @@ func TestUpdateAccountPreservesController(t *testing.T) {
 		t.Fatalf("unexpected updated account: %#v", account)
 	}
 }
+
+func TestOpenSharesExistingAccountRolloutsWithPrimaryHome(t *testing.T) {
+	root := t.TempDir()
+	primaryHome := filepath.Join(root, "primary")
+	muxRoot := filepath.Join(root, "mux")
+	store, err := Open(muxRoot, primaryHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.AddAccount("Work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(account.CodexHome, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	rolloutRelative := filepath.Join("2026", "08", "29", "rollout-thread.jsonl")
+	isolatedRollout := filepath.Join(account.CodexHome, "sessions", rolloutRelative)
+	if err := os.MkdirAll(filepath.Dir(isolatedRollout), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(isolatedRollout, []byte("rollout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(muxRoot, primaryHome); err != nil {
+		t.Fatal(err)
+	}
+	primaryRollout := filepath.Join(primaryHome, "sessions", rolloutRelative)
+	if data, err := os.ReadFile(primaryRollout); err != nil || string(data) != "rollout\n" {
+		t.Fatalf("rollout was not made visible to the primary app: data=%q err=%v", data, err)
+	}
+	info, err := os.Lstat(filepath.Join(account.CodexHome, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("isolated sessions should point at the shared primary store: mode=%v", info.Mode())
+	}
+}

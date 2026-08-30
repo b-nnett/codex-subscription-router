@@ -28,7 +28,9 @@ type response struct {
 	err     error
 }
 
-// Child owns one real Codex app-server process and one isolated CODEX_HOME.
+// Child owns one real Codex app-server process and one isolated credential
+// home. All children use the primary SQLite home so every client can discover
+// the same thread index.
 type Child struct {
 	accountID string
 	exe       string
@@ -46,9 +48,8 @@ type Child struct {
 	closeOnce sync.Once
 }
 
-func Start(accountID, codexHome, executable string, args, baseEnv []string, inbound chan<- Inbound) (*Child, error) {
-	env := withEnvironment(baseEnv, "CODEX_HOME", codexHome)
-	env = withEnvironment(env, "CODEX_SQLITE_HOME", codexHome)
+func Start(accountID, codexHome, sqliteHome, executable string, args, baseEnv []string, inbound chan<- Inbound) (*Child, error) {
+	env := childEnvironment(baseEnv, codexHome, sqliteHome)
 	command := exec.Command(executable, args...)
 	command.Env = env
 	stdin, err := command.StdinPipe()
@@ -78,6 +79,11 @@ func Start(accountID, codexHome, executable string, args, baseEnv []string, inbo
 	go child.readLoop(stdout)
 	go child.waitLoop()
 	return child, nil
+}
+
+func childEnvironment(baseEnv []string, codexHome, sqliteHome string) []string {
+	env := withEnvironment(baseEnv, "CODEX_HOME", codexHome)
+	return withEnvironment(env, "CODEX_SQLITE_HOME", sqliteHome)
 }
 
 func (c *Child) AccountID() string {

@@ -31,8 +31,9 @@ type persistedState struct {
 	ThreadOwner map[string]string `json:"threadOwner"`
 }
 
-// Store persists only routing metadata. OAuth credentials and conversation
-// databases remain inside each account's isolated Codex home.
+// Store persists routing metadata. OAuth credentials remain isolated; rollout
+// files and the SQLite thread index are shared with the primary Codex home so
+// the official app can resume chats created by every subscription.
 type Store struct {
 	mu               sync.RWMutex
 	root             string
@@ -92,6 +93,9 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 		if samePath(account.CodexHome, primaryCodexHome) {
 			continue
 		}
+		if err := shareRolloutStorage(primaryCodexHome, account.CodexHome); err != nil {
+			return nil, fmt.Errorf("share account %q rollouts: %w", account.ID, err)
+		}
 		if err := syncIsolatedConfig(primaryCodexHome, account.CodexHome); err != nil {
 			return nil, fmt.Errorf("sync account %q config: %w", account.ID, err)
 		}
@@ -101,6 +105,10 @@ func Open(root, primaryCodexHome string) (*Store, error) {
 
 func (s *Store) Root() string {
 	return s.root
+}
+
+func (s *Store) PrimaryCodexHome() string {
+	return s.primaryCodexHome
 }
 
 // SyncManagedConfig propagates desktop-managed configuration (including
@@ -177,6 +185,9 @@ func (s *Store) AddAccount(label string) (Account, error) {
 	if err := syncIsolatedConfig(s.primaryCodexHome, codexHome); err != nil {
 		return Account{}, fmt.Errorf("write account config: %w", err)
 	}
+	if err := shareRolloutStorage(s.primaryCodexHome, codexHome); err != nil {
+		return Account{}, fmt.Errorf("share account rollouts: %w", err)
+	}
 
 	account := Account{
 		ID:        id,
@@ -190,6 +201,87 @@ func (s *Store) AddAccount(label string) (Account, error) {
 		return Account{}, err
 	}
 	return account, nil
+}
+
+func shareRolloutStorage(primaryCodexHome, isolatedCodexHome string) error {
+	for _, name := range []string{"sessions", "archived_sessions"} {
+		primaryPath := filepath.Join(primaryCodexHome, name)
+		isolatedPath := filepath.Join(isolatedCodexHome, name)
+		if err := os.MkdirAll(primaryPath, 0o700); err != nil {
+			return fmt.Errorf("create shared %s: %w", name, err)
+		}
+		info, err := os.Lstat(isolatedPath)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Symlink(primaryPath, isolatedPath); err != nil {
+				return fmt.Errorf("link %s: %w", name, err)
+			}
+		case err != nil:
+			return fmt.Errorf("inspect %s: %w", name, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := filepath.EvalSymlinks(isolatedPath)
+			if err != nil {
+				return fmt.Errorf("resolve %s link: %w", name, err)
+			}
+			resolvedPrimary, err := filepath.EvalSymlinks(primaryPath)
+			if err != nil {
+				return fmt.Errorf("resolve shared %s: %w", name, err)
+			}
+			if !samePath(target, resolvedPrimary) {
+				return fmt.Errorf("%s already links to %q", isolatedPath, target)
+			}
+		case info.IsDir():
+			if err := mergeTree(isolatedPath, primaryPath); err != nil {
+				return fmt.Errorf("migrate %s: %w", name, err)
+			}
+			backup := isolatedPath + ".codex-mux-backup-" + time.Now().Format("20060102T150405.000000000")
+			if err := os.Rename(isolatedPath, backup); err != nil {
+				return fmt.Errorf("preserve old %s: %w", name, err)
+			}
+			if err := os.Symlink(primaryPath, isolatedPath); err != nil {
+				_ = os.Rename(backup, isolatedPath)
+				return fmt.Errorf("link migrated %s: %w", name, err)
+			}
+		default:
+			return fmt.Errorf("%s is not a directory", isolatedPath)
+		}
+	}
+	return nil
+}
+
+func mergeTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil || relative == "." {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlink inside rollout store: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if existing, err := os.ReadFile(target); err == nil {
+			if slices.Equal(existing, data) {
+				return nil
+			}
+			return fmt.Errorf("rollout collision at %s", relative)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o600)
+	})
 }
 
 func (s *Store) UpdateAccount(id string, label *string, enabled *bool) (Account, error) {

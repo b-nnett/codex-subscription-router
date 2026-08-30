@@ -19,6 +19,11 @@ profile and rate-limit-reset endpoints used by the desktop experience. It does
 not log or return tokens. State persisted by the mux contains account paths,
 labels, enabled state, and thread ownership only.
 
+Conversation rollout files and the SQLite thread index are deliberately shared
+between account children. This enables cross-account continuation and lets the
+official app discover router-created chats. The shared store contains chat
+history, but not the per-account `auth.json` credential files.
+
 The state root is mode `0700`; state, config, and control-token files are mode
 `0600`. Existing control tokens are validated as 256-bit hexadecimal values and
 their permissions are repaired on startup.

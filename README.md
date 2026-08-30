@@ -25,9 +25,13 @@ binaries or a prebuilt application.
 - **Quota-aware routing.** New chats favour weekly allowance that will expire
   sooner, with a bounded boost for accounts holding banked usage resets.
 - **Sticky conversations.** Once a thread is assigned, every follow-up returns
-  to the same subscription unless that subscription is depleted.
+  to the same subscription unless it is manually switched or depleted.
 - **Automatic failover.** A depleted thread continues through another account
   with quota; if the whole pool is empty, the app shows one combined alert.
+- **Shared chat history.** Rollouts and the thread index are visible to every
+  connected subscription and the official app, while credentials stay isolated.
+- **Per-chat switching.** The pinned thread summary can move an idle chat to
+  another connected subscription without creating a new conversation.
 - **Native account management.** The existing profile menu shows pooled usage,
   profile photos, plan names, masked emails, and device-code sign-in.
 - **Account-aware settings.** Profile statistics can be viewed together or per
@@ -73,8 +77,8 @@ Codex Subscription Router currently targets:
 | Component | Supported value |
 | --- | --- |
 | Platform | macOS on Apple silicon |
-| Official ChatGPT version | `26.803.61601` |
-| Official bundle build | `6396` |
+| Official ChatGPT versions | `26.803.61601`, `26.825.32147`, `26.825.41651` |
+| Official bundle builds | `6396`, `7303`, `7345` |
 | Go | 1.26 or newer |
 | Node.js | 22.12 or newer |
 
@@ -184,9 +188,9 @@ request Automation access the first time Computer Use controls another app.
 While the code is visible, clicking away does not dismiss the menu. Clicking
 the code copies it and opens the verification page.
 
-The profile menu displays combined weekly usage followed by one row per
-subscription. Email addresses remain masked until hovered. The final row always
-starts another sign-in.
+The profile menu displays combined usage followed by one row per subscription.
+Each row shows both five-hour and weekly usage with reset times. Email addresses
+remain masked until hovered. The final row always starts another sign-in.
 
 ## Routing behavior
 
@@ -194,6 +198,7 @@ starts another sign-in.
 | --- | --- |
 | New chat | Assigned by quota-at-risk, banked resets, and short-window pressure |
 | Follow-up | Sent to the thread's persisted account owner |
+| Manual switch | Resumes an idle chat on the selected subscription |
 | Owner depleted | Continued through another account with capacity |
 | Every account depleted | Combined quota alert with the next known reset |
 | Account disabled | Excluded from routing and pooled usable quota |

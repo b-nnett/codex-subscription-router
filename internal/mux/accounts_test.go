@@ -93,6 +93,43 @@ func TestAggregateRateLimitsReportsAllDepleted(t *testing.T) {
 	}
 }
 
+func TestAccountCapacityRequiresFiveHourCapacity(t *testing.T) {
+	shortMinutes := int64(300)
+	weeklyMinutes := int64(10_080)
+	snapshot := AccountSnapshot{
+		Enabled: true, Connected: true, AuthType: "chatgpt",
+		RateLimits: &RateLimits{
+			Primary:   &RateLimitWindow{UsedPercent: 100, WindowDurationMins: &shortMinutes},
+			Secondary: &RateLimitWindow{UsedPercent: 20, WindowDurationMins: &weeklyMinutes},
+		},
+	}
+	if accountHasCapacity(snapshot) {
+		t.Fatal("account with a depleted five-hour window must not receive another turn")
+	}
+}
+
+func TestAggregateRateLimitsReportsFiveHourPoolDepleted(t *testing.T) {
+	shortMinutes := int64(300)
+	weeklyMinutes := int64(10_080)
+	snapshots := []AccountSnapshot{
+		{ID: "one", Enabled: true, Connected: true, AuthType: "chatgpt", RateLimits: &RateLimits{
+			Primary:   &RateLimitWindow{UsedPercent: 100, WindowDurationMins: &shortMinutes},
+			Secondary: &RateLimitWindow{UsedPercent: 20, WindowDurationMins: &weeklyMinutes},
+		}},
+		{ID: "two", Enabled: true, Connected: true, AuthType: "chatgpt", RateLimits: &RateLimits{
+			Primary:   &RateLimitWindow{UsedPercent: 100, WindowDurationMins: &shortMinutes},
+			Secondary: &RateLimitWindow{UsedPercent: 40, WindowDurationMins: &weeklyMinutes},
+		}},
+	}
+	limits, err := aggregateRateLimits(snapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.RateLimitReachedType != "rate_limit_reached" {
+		t.Fatalf("expected five-hour depletion to block the pool, got %#v", limits)
+	}
+}
+
 func TestRouteUrgencyPrefersQuotaExpiringSooner(t *testing.T) {
 	now := time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC)
 	weeklyMinutes := int64(10_080)

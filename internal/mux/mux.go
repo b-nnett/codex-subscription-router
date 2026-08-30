@@ -41,6 +41,12 @@ type serverRequestRoute struct {
 	original  json.RawMessage
 }
 
+type activeTurn struct {
+	accountID string
+	message   protocol.Message
+	excluded  map[string]struct{}
+}
+
 type Event struct {
 	Type      string `json:"type"`
 	AccountID string `json:"accountId,omitempty"`
@@ -67,6 +73,8 @@ type Multiplexer struct {
 
 	externalMu     sync.Mutex
 	externalRoutes map[string]externalRoute
+	activeTurnsMu  sync.Mutex
+	activeTurns    map[string]activeTurn
 	serverMu       sync.Mutex
 	serverRoutes   map[string]serverRequestRoute
 	serverSequence atomic.Uint64
@@ -104,6 +112,7 @@ func New(options Options) (*Multiplexer, error) {
 		children:             make(map[string]*backend.Child),
 		inbound:              make(chan backend.Inbound, 1024),
 		externalRoutes:       make(map[string]externalRoute),
+		activeTurns:          make(map[string]activeTurn),
 		serverRoutes:         make(map[string]serverRequestRoute),
 		events:               make(map[chan Event]struct{}),
 		profileClient:        &http.Client{Timeout: 10 * time.Second},
@@ -450,6 +459,17 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 				go m.retryTurnAfterUsageLimit(route, inbound.AccountID)
 				return
 			}
+			if route.method == "turn/start" && message.Error == nil {
+				if threadID := threadIDFromParams(route.message.Params); threadID != "" {
+					m.activeTurnsMu.Lock()
+					m.activeTurns[threadID] = activeTurn{
+						accountID: inbound.AccountID,
+						message:   route.message,
+						excluded:  cloneAccountSet(route.excluded),
+					}
+					m.activeTurnsMu.Unlock()
+				}
+			}
 			m.learnThreadOwner(route, inbound.AccountID, message.Result)
 			m.writeRaw(inbound.Raw)
 		}
@@ -468,6 +488,27 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 			_ = m.store.SetThreadOwner(threadID, inbound.AccountID)
 		}
 	}
+	if isTerminalUsageLimitNotification(message.Method, message.Params) {
+		threadID := notificationThreadID(message.Params)
+		m.activeTurnsMu.Lock()
+		active, ok := m.activeTurns[threadID]
+		if ok && active.accountID == inbound.AccountID {
+			delete(m.activeTurns, threadID)
+		}
+		m.activeTurnsMu.Unlock()
+		if ok && active.accountID == inbound.AccountID {
+			go m.continueAfterAsyncUsageLimit(threadID, active, inbound.AccountID)
+		}
+	}
+	if message.Method == "turn/completed" {
+		if threadID := notificationThreadID(message.Params); threadID != "" {
+			m.activeTurnsMu.Lock()
+			if tracked, exists := m.activeTurns[threadID]; exists && tracked.accountID == inbound.AccountID {
+				delete(m.activeTurns, threadID)
+			}
+			m.activeTurnsMu.Unlock()
+		}
+	}
 	if message.Method == "turn/completed" ||
 		message.Method == "account/login/completed" ||
 		message.Method == "account/updated" {
@@ -476,6 +517,58 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 	if m.shouldForwardNotification(inbound.AccountID, message.Method) {
 		m.writeRaw(inbound.Raw)
 	}
+}
+
+func (m *Multiplexer) continueAfterAsyncUsageLimit(threadID string, active activeTurn, exhaustedAccountID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*requestTimeout)
+	defer cancel()
+	excluded := cloneAccountSet(active.excluded)
+	if excluded == nil {
+		excluded = make(map[string]struct{})
+	}
+	excluded[exhaustedAccountID] = struct{}{}
+	fallback, _, err := m.chooseAccountExcluding(ctx, excluded)
+	if err != nil {
+		m.publish(Event{Type: "thread-failover-failed", AccountID: exhaustedAccountID, Message: err.Error(), Data: map[string]any{"threadId": threadID}})
+		return
+	}
+	if err := m.resumeThreadOnAccount(ctx, threadID, exhaustedAccountID, fallback.ID); err != nil {
+		m.publish(Event{Type: "thread-failover-failed", AccountID: exhaustedAccountID, Message: err.Error(), Data: map[string]any{"threadId": threadID}})
+		return
+	}
+	if err := m.store.SetThreadOwner(threadID, fallback.ID); err != nil {
+		return
+	}
+	params, err := automaticContinuationParams(active.message.Params)
+	if err != nil {
+		return
+	}
+	target, ok := m.child(fallback.ID)
+	if !ok {
+		return
+	}
+	m.activeTurnsMu.Lock()
+	m.activeTurns[threadID] = activeTurn{
+		accountID: fallback.ID,
+		message:   protocol.Message{Method: "turn/start", Params: params},
+		excluded:  excluded,
+	}
+	m.activeTurnsMu.Unlock()
+	if _, err := target.Request(ctx, "turn/start", params); err != nil {
+		m.activeTurnsMu.Lock()
+		if tracked, exists := m.activeTurns[threadID]; exists && tracked.accountID == fallback.ID {
+			delete(m.activeTurns, threadID)
+		}
+		m.activeTurnsMu.Unlock()
+		m.publish(Event{Type: "thread-failover-failed", AccountID: fallback.ID, Message: err.Error(), Data: map[string]any{"threadId": threadID}})
+		return
+	}
+	m.publish(Event{
+		Type:      "thread-failed-over",
+		AccountID: fallback.ID,
+		Message:   fmt.Sprintf("Chat automatically continued with %s", fallback.Label),
+		Data:      map[string]any{"threadId": threadID, "previousAccountId": exhaustedAccountID},
+	})
 }
 
 func (m *Multiplexer) forwardAggregatedRateLimitNotification(fallback []byte) {
@@ -602,6 +695,7 @@ func (m *Multiplexer) startChild(ctx context.Context, account state.Account) (*b
 	child, err := backend.Start(
 		account.ID,
 		account.CodexHome,
+		m.store.PrimaryCodexHome(),
 		m.realExecutable,
 		m.realArgs,
 		m.environment,
@@ -699,12 +793,19 @@ func threadIDFromNotification(params json.RawMessage) string {
 	return threadIDFromResult(params)
 }
 
+func notificationThreadID(params json.RawMessage) string {
+	if threadID := threadIDFromParams(params); threadID != "" {
+		return threadID
+	}
+	return threadIDFromNotification(params)
+}
+
 func accountHasCapacity(snapshot AccountSnapshot) bool {
 	if !snapshot.Enabled || !snapshot.Connected || snapshot.AuthType != "chatgpt" {
 		return false
 	}
-	weekly, _ := longestAndShortestWindow(snapshot.RateLimits)
-	return weekly == nil || weekly.UsedPercent < 100
+	weekly, short := longestAndShortestWindow(snapshot.RateLimits)
+	return !windowDepleted(weekly) && !windowDepleted(short)
 }
 
 func isUsageLimitResponse(message protocol.Message) bool {
@@ -719,14 +820,48 @@ func isUsageLimitResponse(message protocol.Message) bool {
 		strings.Contains(text, "quota")
 }
 
+func isTerminalUsageLimitNotification(method string, params json.RawMessage) bool {
+	if method != "error" || len(params) == 0 {
+		return false
+	}
+	var decoded struct {
+		WillRetry bool `json:"willRetry"`
+	}
+	if json.Unmarshal(params, &decoded) != nil || decoded.WillRetry {
+		return false
+	}
+	text := strings.ToLower(string(params))
+	return strings.Contains(text, "usage_limit") ||
+		strings.Contains(text, "usage limit") ||
+		strings.Contains(text, "rate_limit") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "quota")
+}
+
+func automaticContinuationParams(original json.RawMessage) (json.RawMessage, error) {
+	var params map[string]any
+	if err := json.Unmarshal(original, &params); err != nil {
+		return nil, fmt.Errorf("decode interrupted turn: %w", err)
+	}
+	params["input"] = []map[string]any{{
+		"type": "text",
+		"text": "Continue the task from where the previous subscription stopped. Do not repeat completed work.",
+	}}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("encode continuation turn: %w", err)
+	}
+	return encoded, nil
+}
+
 func (m *Multiplexer) allSubscriptionsDepleted(ctx context.Context, id json.RawMessage) protocol.Message {
 	var resetsAt *int64
 	if preview := m.currentRateLimitPreview(); preview != nil && preview.Mode.isAllDepleted() {
 		resetsAt = preview.ResetsAt
 	} else if limits, err := m.AggregatedRateLimits(ctx); err == nil {
-		weekly, _ := longestAndShortestWindow(limits)
-		if weekly != nil {
-			resetsAt = weekly.ResetsAt
+		_, short := longestAndShortestWindow(limits)
+		if short != nil {
+			resetsAt = short.ResetsAt
 		}
 	}
 	return allSubscriptionsDepleted(id, resetsAt)

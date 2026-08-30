@@ -15,7 +15,9 @@ with a small Go multiplexer and keeps the original binary beside it as
 
 The desktop app opens one JSON-RPC app-server connection to the multiplexer.
 The multiplexer starts one real app-server child for every enabled account,
-each with its own `CODEX_HOME` and `CODEX_SQLITE_HOME`.
+each with its own credential-bearing `CODEX_HOME`. All children use the Primary
+account's `CODEX_SQLITE_HOME`, so one thread index is visible to both desktop
+apps.
 
 New threads are assigned using a quota-urgency score: weekly percentage
 remaining divided by the hours until that account resets. Banked usage resets
@@ -27,15 +29,19 @@ approvals, and notifications are rewritten only as needed to preserve one
 coherent desktop session.
 
 If the owner is depleted, the multiplexer resumes the rollout on an account
-with capacity and updates ownership. Threads do not migrate for ordinary load
-balancing.
+with capacity, starts a continuation turn, and updates ownership. An idle thread
+can also be switched explicitly from its pinned summary. Threads do not migrate
+for ordinary load balancing.
 
 ## Account isolation
 
 The Primary account uses `~/.codex`. Added accounts use
 `~/.codex-mux/accounts/<id>/codex-home`. Managed configuration is copied from
 the Primary account, excluding credential-store settings and project trust.
-Each isolated account forces file-backed CLI and MCP OAuth credentials.
+Each isolated account forces file-backed CLI and MCP OAuth credentials. Its
+`sessions` and `archived_sessions` paths link to the Primary rollout store;
+existing isolated rollouts are merged with collision checks and preserved
+backups before the links are installed.
 
 ## Desktop integration
 

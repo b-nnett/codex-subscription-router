@@ -11,6 +11,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -50,9 +51,23 @@ TESTED_SOURCE_BUILDS = {
         "26.803.61601",
         "6396",
     ): "d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf",
+    (
+        "26.825.32147",
+        "7303",
+    ): "0462b03e878f0e78b223b849ee14cbba0de043f2c16acebee163cb95daa622ef",
+    (
+        "26.825.41651",
+        "7345",
+    ): "c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d",
 }
+CURRENT_NATIVE_RENDERER_HASHES = frozenset(
+    {
+        "0462b03e878f0e78b223b849ee14cbba0de043f2c16acebee163cb95daa622ef",
+        "c089b63abb7ca4a751072c0da434248db13c32bed9c363e1b7e5428584b0576d",
+    }
+)
 EXPECTED_CUA_IDENTIFIER_REPLACEMENTS = 49
-EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS = 17
+EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS = frozenset({16, 17})
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,8 +98,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(command: list[str], *, cwd: Path | None = None) -> None:
-    subprocess.run(command, cwd=cwd, check=True)
+def run(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
 def output(command: list[str]) -> str:
@@ -384,10 +404,13 @@ def patch_asar_computer_use_identity(extracted: Path) -> None:
                 OPENAI_COMPUTER_USE_BUNDLE_IDENTIFIER,
                 COMPUTER_USE_BUNDLE_IDENTIFIER,
             )
-    if replacements != EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS:
+    if replacements not in EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS:
+        expected = " or ".join(
+            str(count) for count in sorted(EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS)
+        )
         raise RuntimeError(
             "expected "
-            f"{EXPECTED_ASAR_CUA_IDENTIFIER_REPLACEMENTS} Computer Use references "
+            f"{expected} Computer Use references "
             f"in app.asar, found {replacements}"
         )
 
@@ -415,6 +438,7 @@ def sign_native_code_tree(root: Path, identity: str) -> None:
 
 TEAM_SCOPED_ENTITLEMENTS = (
     "com.apple.application-identifier",
+    "com.apple.developer.aps-environment",
     "com.apple.developer.team-identifier",
     "com.apple.security.application-groups",
     "keychain-access-groups",
@@ -658,8 +682,89 @@ def load_or_create_token() -> str:
     return token
 
 
+def migrate_legacy_thread_indexes() -> int:
+    """Import pre-shared account thread rows into the primary Codex index."""
+    primary = Path.home() / ".codex" / "state_5.sqlite"
+    legacy_databases = sorted(
+        (DEFAULT_STATE_ROOT / "accounts").glob("*/codex-home/state_5.sqlite")
+    )
+    if not primary.is_file() or not legacy_databases:
+        return 0
+
+    connection = sqlite3.connect(str(primary), timeout=30)
+    pending = 0
+    try:
+        for index, database in enumerate(legacy_databases):
+            alias = f"legacy{index}"
+            connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+            pending += connection.execute(
+                f"SELECT count(*) FROM {alias}.threads AS legacy "
+                "WHERE NOT EXISTS (SELECT 1 FROM main.threads WHERE id = legacy.id)"
+            ).fetchone()[0]
+            connection.execute(f"DETACH DATABASE {alias}")
+        if pending == 0:
+            return 0
+
+        backup_root = DEFAULT_STATE_ROOT / "thread-index-backups"
+        backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        backup_root.chmod(0o700)
+        backup = backup_root / f"state_5-{time.strftime('%Y%m%d-%H%M%S')}.sqlite"
+        backup_connection = sqlite3.connect(str(backup))
+        connection.backup(backup_connection)
+        backup_connection.close()
+        backup.chmod(0o600)
+
+        primary_columns = [
+            row[1] for row in connection.execute("PRAGMA main.table_info(threads)")
+        ]
+        imported = 0
+        for index, database in enumerate(legacy_databases):
+            alias = f"legacy{index}"
+            connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+            legacy_columns = {
+                row[1]
+                for row in connection.execute(f"PRAGMA {alias}.table_info(threads)")
+            }
+            columns = [
+                column
+                for column in primary_columns
+                if column in legacy_columns
+                and column not in {"thread_section_id", "project_id"}
+            ]
+            quoted = ",".join(f'"{column}"' for column in columns)
+            source_sessions = str(database.parent / "sessions") + os.sep
+            primary_sessions = str(Path.home() / ".codex" / "sessions") + os.sep
+            select = []
+            parameters: list[object] = []
+            for column in columns:
+                if column == "rollout_path":
+                    select.append(
+                        "CASE WHEN rollout_path LIKE ? THEN ? || "
+                        "substr(rollout_path, ?) ELSE rollout_path END"
+                    )
+                    parameters.extend(
+                        (source_sessions + "%", primary_sessions, len(source_sessions) + 1)
+                    )
+                else:
+                    select.append(f'"{column}"')
+            cursor = connection.execute(
+                f"INSERT OR IGNORE INTO main.threads ({quoted}) "
+                f"SELECT {','.join(select)} FROM {alias}.threads",
+                parameters,
+            )
+            imported += max(0, cursor.rowcount)
+            connection.commit()
+            connection.execute(f"DETACH DATABASE {alias}")
+        print(f"Imported {imported} legacy chat indexes; backup saved to {backup}")
+        return imported
+    finally:
+        connection.close()
+
+
 def build_proxy(destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    build_environment = os.environ.copy()
+    build_environment.update({"GOARCH": "arm64", "GOOS": "darwin"})
     run(
         [
             "go",
@@ -671,6 +776,7 @@ def build_proxy(destination: Path) -> None:
             "./cmd/codex-mux",
         ],
         cwd=PROJECT_ROOT,
+        env=build_environment,
     )
     destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -682,6 +788,8 @@ def install_launcher(app: Path) -> None:
         [
             "xcrun",
             "clang",
+            "-arch",
+            "arm64",
             "-Os",
             "-Wall",
             "-Wextra",
@@ -995,6 +1103,81 @@ def patch_renderer(extracted: Path, token: str) -> None:
     thread_bundle_path.write_text(thread_bundle, encoding="utf-8")
 
 
+def patch_renderer_current(extracted: Path, token: str) -> None:
+    """Restore native account, usage, and thread controls in current builds."""
+    webview = extracted / "webview"
+    index_path = webview / "index.html"
+    index = index_path.read_text(encoding="utf-8")
+    anchor = "connect-src &#39;self&#39;"
+    if index.count(anchor) != 1:
+        raise RuntimeError("could not find ChatGPT renderer CSP connect-src")
+    index_path.write_text(
+        index.replace(anchor, f"{anchor} http://127.0.0.1:{CONTROL_PORT}", 1),
+        encoding="utf-8",
+    )
+
+    bundles = list((webview / "assets").glob("app-initial-*.js"))
+    if len(bundles) != 1:
+        raise RuntimeError(f"expected one ChatGPT initial renderer bundle, found {len(bundles)}")
+    bundle_path = bundles[0]
+    bundle = bundle_path.read_text(encoding="utf-8")
+    component = (PROJECT_ROOT / "ui" / "account-menu.js").read_text(encoding="utf-8")
+    component = component.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT))
+    component = component.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
+    for old, new in (("e7", "l8"), ("kXc", "Lwc"), ("_H", "sz"), ("CH", "pz"), ("BW", "XL"), ("QLs", "two"), ("S2", "CodexMuxPlusIcon")):
+        component = re.sub(rf"\b{re.escape(old)}\b", new, component)
+    component = component.replace("const modalScope = Lo(Q);", "const modalScope = A_($);")
+    component = component.replace("const resolvedImageUrl = jLa(imageUrl || null);", "const resolvedImageUrl = imageUrl || null;")
+    if bundle.count("function CodexMuxAccountMenu("):
+        raise RuntimeError("source app already contains the Codex multiplexer menu")
+    anchor = "function Awc(e){let t=(0,Iwc.c)(3)"
+    if bundle.count(anchor) != 1:
+        raise RuntimeError("could not find current-build native profile component")
+    bundle = bundle.replace(anchor, component + "\n" + anchor, 1)
+    replacements = {
+        "usageItems:Ct": "usageItems:(0,l8.jsx)(CodexMuxAccountMenu,{})",
+        "triggerButton:Dt,onOpenChange:c,children:[N,null]": "triggerButton:Dt,onOpenChange:CodexMuxProfileMenuOpenChange(c),children:[N,null]",
+        "function two(e){": "function two(e){CodexMuxUseResetAccountState();",
+        "let y=v;if(g!=null){": "let y=window.__codexMuxSelectedUsageWindows??v;if(g!=null){",
+        "children:[xe,Se]": "children:[xe,Se,window.__codexMuxResetAccountSelector??null]",
+    }
+    for old, new in replacements.items():
+        if bundle.count(old) != 1:
+            raise RuntimeError(f"could not find current-build native anchor: {old}")
+        bundle = bundle.replace(old, new, 1)
+    query = "function odi(){let e=(0,dR.c)(1),t;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(t={queryKey:[`rate-limit-reset-credits`],queryFn:sdi,refetchInterval:bx.ONE_MINUTE,staleTime:bx.FIVE_SECONDS},e[0]=t):t=e[0],Tx(t)}"
+    if bundle.count(query) != 1:
+        raise RuntimeError("could not find current-build reset-credit query")
+    bundle = bundle.replace(query, "function odi(){let e=window.__codexMuxResetAccountId;return Tx({queryKey:[`rate-limit-reset-credits`,e??`primary`],queryFn:e?()=>codexMuxRateLimitResets(e):sdi,refetchInterval:bx.ONE_MINUTE,staleTime:bx.FIVE_SECONDS})}", 1)
+    mutation = "function cdi(){let e=(0,dR.c)(3),t=Sx(),n=bD(),r;return e[0]!==n||e[1]!==t?(r={mutationFn:ldi,onSuccess:(e,r)=>{let{creditId:i}=r,a=e.code;if(a===`reset`||a===`already_redeemed`){let n=e.code===`reset`?e.credit?.id??i:i;t.setQueryData([`rate-limit-reset-credits`],e=>Mui(e,a,n))}Promise.all([n([`rate-limit-status`]),n([`rate-limit-reset-credits`])])}},e[0]=n,e[1]=t,e[2]=r):r=e[2],Dx(r)}"
+    if bundle.count(mutation) != 1:
+        raise RuntimeError("could not find current-build reset-credit mutation")
+    bundle = bundle.replace(mutation, "function cdi(){let e=Sx(),t=bD(),n=window.__codexMuxResetAccountId,r=[`rate-limit-reset-credits`,n??`primary`];return Dx({mutationFn:n?i=>codexMuxConsumeRateLimitReset(n,i):ldi,onSuccess:(n,i)=>{let{creditId:a}=i,o=n.code;if(o===`reset`||o===`already_redeemed`){let t=o===`reset`?n.credit?.id??a:a;e.setQueryData(r,e=>Mui(e,o,t))}Promise.all([t([`rate-limit-status`]),t(r)])}})}", 1)
+    bundle_path.write_text(bundle, encoding="utf-8")
+
+    thread_candidates = list((webview / "assets").glob("local-conversation-thread-*.js"))
+    thread_candidates = [p for p in thread_candidates if "function oE(e){let t=(0,lE.c)(34)" in p.read_text(encoding="utf-8")]
+    if len(thread_candidates) != 1:
+        raise RuntimeError(f"expected one current-build thread bundle, found {len(thread_candidates)}")
+    thread_path = thread_candidates[0]
+    thread = thread_path.read_text(encoding="utf-8")
+    thread_component = (PROJECT_ROOT / "ui" / "thread-subscription.js").read_text(encoding="utf-8")
+    thread_component = thread_component.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT)).replace("__CODEX_MUX_CONTROL_TOKEN__", token)
+    thread_component = re.sub(r"\bzE\b", "uE", thread_component)
+    thread_component = re.sub(r"\bTE\b", "CodexMuxReact", thread_component)
+    thread_component = thread_component.replace("$n(sr)", "xt(wa)").replace("K.Section", "X.Section")
+    thread_component = "const CodexMuxReact=t(Qi(),1);\n" + thread_component
+    anchor = "function oE(e){let t=(0,lE.c)(34)"
+    if thread.count(anchor) != 1:
+        raise RuntimeError("could not find current-build thread summary component")
+    thread = thread.replace(anchor, thread_component + "\n" + anchor, 1)
+    children = "children:[l,u,d,f,p,m,h,_,v,g,y,b,x,S,C,w]"
+    if thread.count(children) != 1:
+        raise RuntimeError("could not find current-build thread summary section list")
+    thread = thread.replace(children, "children:[l,u,d,f,p,(0,uE.jsx)(CodexMuxThreadSubscription,{}),m,h,_,v,g,y,b,x,S,C,w]", 1)
+    thread_path.write_text(thread, encoding="utf-8")
+
+
 def patch_desktop_profile(
     extracted: Path, installed_computer_use_app: Path
 ) -> None:
@@ -1034,7 +1217,7 @@ def patch_desktop_profile(
     # The copied app must never replace itself with an unpatched official update.
     updater_pattern = re.compile(
         r"await [A-Za-z_$][\w$]*\.initialize\(\);"
-        r"(?=try\{let\{runMainAppStartup:)"
+        r"(?=(?:try\{)?let\{runMainAppStartup:)"
     )
     bootstrap, updater_replacements = updater_pattern.subn("", bootstrap, count=1)
     if updater_replacements != 1:
@@ -1212,7 +1395,10 @@ def patch_app(
         run([str(asar), "extract", str(original_asar), str(extracted)])
         patch_asar_computer_use_identity(extracted)
         patch_desktop_profile(extracted, installed_computer_use_app)
-        patch_renderer(extracted, token)
+        if source_asar_hash in CURRENT_NATIVE_RENDERER_HASHES:
+            patch_renderer_current(extracted, token)
+        else:
+            patch_renderer(extracted, token)
         sign_native_code_tree(extracted, signing_identity)
         repacked_asar = temporary_path / "app.asar"
         run(
@@ -1236,10 +1422,12 @@ def patch_app(
         repacked_unpacked = temporary_path / "app.asar.unpacked"
         if not repacked_unpacked.is_dir():
             raise RuntimeError("ASAR pack did not produce its unpacked native tree")
+        installed_unpacked = resources / "app.asar.unpacked"
+        if installed_unpacked.exists():
+            shutil.rmtree(installed_unpacked)
         shutil.copytree(
             repacked_unpacked,
-            resources / "app.asar.unpacked",
-            dirs_exist_ok=True,
+            installed_unpacked,
         )
 
         bundled_codex = resources / "codex"
@@ -1323,6 +1511,7 @@ def patch_app(
             ]
         )
     retire_stale_cached_computer_use_app()
+    migrate_legacy_thread_indexes()
 
     print(destination)
     print(installed_computer_use_app)

@@ -11,6 +11,27 @@ this project uses [Semantic Versioning](https://semver.org/).
   rebuilds, recoverable upgrades, and automatic launch.
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and
   gives a bounded boost to subscriptions with banked usage resets.
+- Shared rollout storage and thread indexing so router-created chats remain
+  discoverable by every subscription and the official app.
+- Manual per-chat subscription switching with active-turn and quota guards.
+- Automatic continuation on another account after a terminal usage-limit
+  failure.
+- Per-account five-hour and weekly usage, reset timestamps, and a native-style
+  selector in the pinned thread summary.
+- Fail-closed support for ChatGPT desktop builds `7303` and `7345`.
+
+### Changed
+
+- New-turn routing now excludes accounts whose five-hour or weekly window is
+  depleted.
+- Apple silicon is selected explicitly for the launcher and multiplexer build.
+
+### Fixed
+
+- Restricted push entitlements are removed from independently signed copies so
+  macOS does not terminate ad-hoc builds at launch.
+- Legacy isolated thread indexes are backed up and imported into the shared
+  primary index during upgrade.
 
 ## [0.1.0] - 2026-08-15
 

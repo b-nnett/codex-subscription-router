@@ -119,20 +119,42 @@ func (s *Server) threadAccount(response http.ResponseWriter, request *http.Reque
 		writeJSON(response, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	if request.Method != http.MethodGet {
+	threadID := strings.TrimSpace(request.URL.Query().Get("threadId"))
+	accountID := ""
+	if request.Method == http.MethodPost {
+		var input struct {
+			ThreadID  string `json:"threadId"`
+			AccountID string `json:"accountId"`
+		}
+		if err := decodeJSON(request, &input); err != nil {
+			writeJSON(response, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		threadID = strings.TrimSpace(input.ThreadID)
+		accountID = strings.TrimSpace(input.AccountID)
+	} else if request.Method != http.MethodGet {
 		methodNotAllowed(response)
 		return
 	}
-	threadID := strings.TrimSpace(request.URL.Query().Get("threadId"))
 	if threadID == "" {
 		writeJSON(response, http.StatusBadRequest, map[string]any{"error": "threadId is required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Second)
 	defer cancel()
-	account, err := s.mux.ThreadAccount(ctx, threadID)
+	var account mux.AccountSnapshot
+	var err error
+	if request.Method == http.MethodPost {
+		account, err = s.mux.SwitchThreadAccount(ctx, threadID, accountID)
+	} else {
+		account, err = s.mux.ThreadAccount(ctx, threadID)
+	}
 	if err != nil {
-		writeJSON(response, http.StatusNotFound, map[string]any{"error": err.Error()})
+		status := http.StatusBadRequest
+		if request.Method == http.MethodGet {
+			status = http.StatusNotFound
+		}
+		writeJSON(response, status, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"account": account})
