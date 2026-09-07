@@ -143,6 +143,10 @@ CODEX_MUX_SIGNING_IDENTITY="Developer ID Application: Example Corp (TEAMID1234)"
   python3 scripts/patch_app.py
 ```
 
+The patcher resolves the signing team from a temporary signed executable, so
+Apple Development identities whose display-name suffix differs from their team ID
+are supported. `CODEX_MUX_SIGNING_IDENTITY` also accepts a certificate fingerprint.
+
 Reuse the same Apple team for every rebuild. Changing teams changes the app's
 designated requirement and can invalidate existing macOS privacy consent. The
 patcher refuses an unexpected team change unless you deliberately pass

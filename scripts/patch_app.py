@@ -125,12 +125,21 @@ def resolve_signing_identity(allow_adhoc: bool) -> str:
 def signing_team_identifier(identity: str) -> str | None:
     if identity == "-":
         return None
-    match = re.search(r"\(([A-Z0-9]{10})\)$", identity)
-    if match is None:
-        raise RuntimeError(
-            "the signing identity must end with its 10-character Apple team ID"
-        )
-    return match.group(1)
+    # Apple Development display names may end in a person ID, not a team ID.
+    # Let codesign resolve the exact selector (including certificate hashes),
+    # then inspect the team it actually writes without exporting a certificate.
+    with tempfile.TemporaryDirectory(prefix=".codex-mux-signing-probe-") as temporary:
+        probe = Path(temporary) / "signing-probe"
+        shutil.copyfile("/usr/bin/true", probe)
+        run([
+            "codesign", "--force", "--sign", identity,
+            "--timestamp=none", str(probe),
+        ])
+        _, team = signed_code_metadata(probe)
+    if team is None or re.fullmatch(r"[A-Z0-9]{10}", team) is None:
+        raise RuntimeError("could not determine the selected signing identity's Apple team ID")
+    return team
+
 
 
 def signed_code_metadata(path: Path) -> tuple[str | None, str | None]:
