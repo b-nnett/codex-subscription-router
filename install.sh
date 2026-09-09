@@ -2,7 +2,11 @@
 
 set -euo pipefail
 
-readonly REPOSITORY_URL="https://github.com/b-nnett/codex-subscription-router.git"
+readonly DEFAULT_REPOSITORY_URL="https://github.com/b-nnett/codex-subscription-router.git"
+# Fork publishers: point this default at your fork so one-command installs and
+# source updates track the fork. It can also be overridden per-run via the
+# CODEX_SUBSCRIPTION_ROUTER_REPOSITORY_URL environment variable.
+readonly REPOSITORY_URL="${CODEX_SUBSCRIPTION_ROUTER_REPOSITORY_URL:-${DEFAULT_REPOSITORY_URL}}"
 readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
 readonly DESTINATION_APP="${HOME}/Applications/Codex Subscription Router.app"

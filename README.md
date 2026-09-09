@@ -1,5 +1,13 @@
 # Codex Subscription Router
 
+> [!NOTE]
+> **Intel Mac fork.** This branch (`intel-x86_64`) extends the upstream
+> project with Intel `x86_64` support and macOS 13.5+ compatibility in Core
+> mode (multi-subscription routing without the Computer Use helper). Upstream:
+> `https://github.com/b-nnett/codex-subscription-router` (Apple silicon).
+> See [`docs/FORK.md`](docs/FORK.md) for the relationship, differences, and
+> publishing checklist.
+
 ![Multi-subscription account menu](screenshots/account-menu.png)
 
 Use multiple ChatGPT subscriptions from one independent macOS desktop app.
