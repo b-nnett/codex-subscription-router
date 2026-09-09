@@ -7,6 +7,12 @@ __pycache__/
 *.app
 *.backup-*
 *.asar
+# Never commit extracted upstream renderer bundles (proprietary).
+app-initial-*.js
+app-primary-*.js
+profile-*.js
+plugins-settings-*.js
+local-conversation-thread-*.js
 *.dmg
 *.pkg
 *.pfx
