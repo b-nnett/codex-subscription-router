@@ -1658,16 +1658,23 @@ def patch_app_initial_8378(extracted: Path, token: str) -> None:
 
     reset_query_key_anchor = "t={queryKey:[`rate-limit-reset-credits`],queryFn:C5i,"
     # The account id is read from the query key itself, not from the mutable
-    # selection global: key and fetch are evaluated at different times, and a
+    # selection global: key and fetch evaluate at different times, and a
     # background refetch racing an account switch would otherwise cache one
-    # subscription's credits under the other's key.
+    # subscription's credits under the other's key. The payload shape is
+    # normalized defensively: Adn filters `credits` unguarded, so a malformed
+    # payload must degrade to an empty list (with a console warning) rather
+    # than crash the whole window.
     bundle = replace_unique(
         bundle,
         reset_query_key_anchor,
         "t={queryKey:[`rate-limit-reset-credits`,"
         "window.__codexMuxResetAccountId??`primary`],"
-        "queryFn:({queryKey:e})=>e[1]!==`primary`?"
-        "codexMuxRateLimitResets(e[1]):C5i,",
+        "queryFn:({queryKey:e})=>{const a=e[1]!==`primary`?"
+        "codexMuxRateLimitResets(e[1]):C5i();"
+        "return Promise.resolve(a).then(d=>{"
+        "if(d&&!Array.isArray(d.credits)){"
+        "try{console.warn(`codex-mux: unexpected reset payload`,Object.keys(d||{}))}catch(w){}"
+        "return{...(d||{}),credits:[]}}return d})},",
         "the native reset-credit query",
     )
 

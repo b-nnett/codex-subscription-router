@@ -614,8 +614,10 @@ class Patch8378FixtureTests(unittest.TestCase):
             self.assertNotIn("mutationFn:T5i,", bundle)
             # The fetch account must come from the query key itself so a
             # background refetch racing an account switch cannot poison the
-            # cache with the other subscription's credits.
-            self.assertIn("({queryKey:e})=>e[1]!==`primary`?", bundle)
+            # cache with the other subscription's credits, and the payload
+            # shape is normalized so Adn can never crash on it.
+            self.assertIn("queryFn:({queryKey:e})=>{const a=e[1]!==`primary`?", bundle)
+            self.assertIn("Array.isArray(d.credits)", bundle)
             self.assertIn("codexMuxConsumeResetForAccount(", bundle)
             # Already-patched detection is deterministic.
             with self.assertRaises(RuntimeError):
