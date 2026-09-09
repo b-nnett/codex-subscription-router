@@ -108,7 +108,7 @@ Run one command. It downloads or updates the source, installs the locked build
 dependency, creates the independently signed app, and launches it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/b-nnett/codex-subscription-router/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/nurasss/codex-subscription-router/intel-x86_64/install.sh | /bin/bash
 ```
 
 The installer keeps its source checkout in

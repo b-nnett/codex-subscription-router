@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/b-nnett/codex-subscription-router.git"
+    "url": "git+https://github.com/nurasss/codex-subscription-router.git"
   },
-  "homepage": "https://github.com/b-nnett/codex-subscription-router#readme",
+  "homepage": "https://github.com/nurasss/codex-subscription-router#readme",
   "bugs": {
-    "url": "https://github.com/b-nnett/codex-subscription-router/issues"
+    "url": "https://github.com/nurasss/codex-subscription-router/issues"
   },
   "engines": {
     "node": ">=22.12"
