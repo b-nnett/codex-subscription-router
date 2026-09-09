@@ -80,6 +80,33 @@ async function codexMuxConsumeRateLimitReset(accountId, input) {
   );
 }
 
+// Guarded consume for the keyed reset-credit query: the mutation row on
+// screen may briefly belong to the previously selected subscription while a
+// refetch is in flight, so refuse to send another account's credit id.
+// When the cache cannot confirm membership, fall through to the server,
+// which validates the credit itself.
+async function codexMuxConsumeResetForAccount(accountId, input, queryClient) {
+  try {
+    const cached = queryClient.getQueryData([
+      `rate-limit-reset-credits`,
+      accountId,
+    ]);
+    const credits = cached?.credits;
+    if (
+      Array.isArray(credits) &&
+      input?.creditId != null &&
+      !credits.some((credit) => credit?.id === input.creditId)
+    ) {
+      throw new Error(
+        "stale reset selection for another subscription; reopen the usage sheet and retry",
+      );
+    }
+  } catch (error) {
+    if (error?.message?.startsWith("stale reset selection")) throw error;
+  }
+  return codexMuxConsumeRateLimitReset(accountId, input);
+}
+
 function CodexMuxUsageModal({
   onClose,
 }) {

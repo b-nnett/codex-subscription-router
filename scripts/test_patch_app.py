@@ -612,6 +612,11 @@ class Patch8378FixtureTests(unittest.TestCase):
             self.assertIn("window.__codexMuxResetAccountId", bundle)
             self.assertNotIn("queryFn:C5i,", bundle)
             self.assertNotIn("mutationFn:T5i,", bundle)
+            # The fetch account must come from the query key itself so a
+            # background refetch racing an account switch cannot poison the
+            # cache with the other subscription's credits.
+            self.assertIn("({queryKey:e})=>e[1]!==`primary`?", bundle)
+            self.assertIn("codexMuxConsumeResetForAccount(", bundle)
             # Already-patched detection is deterministic.
             with self.assertRaises(RuntimeError):
                 patch_app.patch_app_initial_8378(root, TEST_TOKEN_8378)

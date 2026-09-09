@@ -1518,6 +1518,7 @@ def app_initial_prelude_8378(token: str) -> str:
         "codexMuxProfileData",
         "codexMuxRateLimitResets",
         "codexMuxConsumeRateLimitReset",
+        "codexMuxConsumeResetForAccount",
     ):
         if f"function {helper}" not in prelude and f"async function {helper}" not in prelude:
             raise RuntimeError(
@@ -1656,13 +1657,17 @@ def patch_app_initial_8378(extracted: Path, token: str) -> None:
     )
 
     reset_query_key_anchor = "t={queryKey:[`rate-limit-reset-credits`],queryFn:C5i,"
+    # The account id is read from the query key itself, not from the mutable
+    # selection global: key and fetch are evaluated at different times, and a
+    # background refetch racing an account switch would otherwise cache one
+    # subscription's credits under the other's key.
     bundle = replace_unique(
         bundle,
         reset_query_key_anchor,
         "t={queryKey:[`rate-limit-reset-credits`,"
         "window.__codexMuxResetAccountId??`primary`],"
-        "queryFn:window.__codexMuxResetAccountId!=null?"
-        "()=>codexMuxRateLimitResets(window.__codexMuxResetAccountId):C5i,",
+        "queryFn:({queryKey:e})=>e[1]!==`primary`?"
+        "codexMuxRateLimitResets(e[1]):C5i,",
         "the native reset-credit query",
     )
 
@@ -1671,7 +1676,7 @@ def patch_app_initial_8378(extracted: Path, token: str) -> None:
         bundle,
         reset_mutation_anchor,
         "r={mutationFn:window.__codexMuxResetAccountId!=null?"
-        "e=>codexMuxConsumeRateLimitReset(window.__codexMuxResetAccountId,e):T5i,",
+        "e=>codexMuxConsumeResetForAccount(window.__codexMuxResetAccountId,e,t):T5i,",
         "the native reset-credit mutation",
     )
     reset_key_suffix = ",window.__codexMuxResetAccountId??`primary`"
