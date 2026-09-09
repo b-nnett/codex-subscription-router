@@ -9,7 +9,28 @@ work.
 
 Codex Subscription Router replaces the copied app's bundled `codex` executable
 with a small Go multiplexer and keeps the original binary beside it as
-`codex.real`.
+`codex.real`. The multiplexer and the native launcher are built
+deterministically for the detected source architecture (`GOARCH=arm64` with
+`clang -arch arm64` on Apple silicon, `GOARCH=amd64` with
+`clang -arch x86_64` on Intel), and every staged Mach-O binary is validated
+for the target slice before signing, because `codesign` never converts one
+CPU architecture into another.
+
+## Capability levels
+
+- **Full.** The independently identified and signed Computer Use helper is
+  installed alongside the app (Apple-silicon sources with a tested
+  compatibility profile).
+- **Core.** No helper is installed: the ASAR identity patch, helper signing,
+  helper installation, and helper environment wiring are skipped, a previously
+  installed helper is retired to backups, and the desktop profile keeps only
+  its isolation plus the canonical-refresh skip. Routing, sticky threads,
+  failover, account isolation, pooled usage, and the Profile/Plugins/reset
+  selectors do not depend on the helper.
+
+Compatibility profiles are keyed by version, build, architecture, and ASAR
+hash, and the patcher prints the detected architecture with the selected
+capability level.
 
 ## Request routing
 

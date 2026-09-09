@@ -72,7 +72,7 @@ Codex Subscription Router currently targets:
 
 | Component | Supported value |
 | --- | --- |
-| Platform | macOS on Apple silicon |
+| Platform | macOS on Apple silicon; Intel (`x86_64`, Core mode) port in progress on the `intel-x86_64` branch |
 | Official ChatGPT version | `26.803.61601` |
 | Official bundle build | `6396` |
 | Go | 1.26 or newer |
