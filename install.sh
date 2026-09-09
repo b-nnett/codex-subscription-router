@@ -21,8 +21,22 @@ require_prerequisites() {
     if [ "$(uname -s)" != "Darwin" ]; then
         fail "Codex Subscription Router supports macOS only."
     fi
-    if [ "$(uname -m)" != "arm64" ]; then
-        fail "Codex Subscription Router currently requires Apple silicon."
+    local machine_arch
+    machine_arch="$(uname -m)"
+    case "${machine_arch}" in
+        arm64|x86_64)
+            ;;
+        *)
+            fail "unsupported Mac architecture '${machine_arch}'. Codex Subscription Router supports arm64 and x86_64."
+            ;;
+    esac
+    printf 'Detected architecture: %s\n' "${machine_arch}" >&2
+    local macos_version
+    macos_version="$(sw_vers -productVersion)"
+    printf 'Detected macOS: %s\n' "${macos_version}" >&2
+    local macos_major="${macos_version%%.*}"
+    if [ "${machine_arch}" = "x86_64" ] && [ "${macos_major}" -lt 14 ]; then
+        fail "Intel Macs require macOS 14 or newer; found ${macos_version}."
     fi
     if [ ! -d "/Applications/ChatGPT.app" ]; then
         fail "install the official ChatGPT app in /Applications first."
