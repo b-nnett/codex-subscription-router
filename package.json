@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/b-nnett/codex-subscription-router.git"
+    "url": "git+https://github.com/nurasss/codex-subscription-router.git"
   },
-  "homepage": "https://github.com/b-nnett/codex-subscription-router#readme",
+  "homepage": "https://github.com/nurasss/codex-subscription-router#readme",
   "bugs": {
-    "url": "https://github.com/b-nnett/codex-subscription-router/issues"
+    "url": "https://github.com/nurasss/codex-subscription-router/issues"
   },
   "engines": {
     "node": ">=22.12"
@@ -19,7 +19,7 @@
     "check": "npm run check:go && npm run check:js && npm run check:python && npm run check:shell",
     "check:go": "go test ./... && go vet ./...",
     "check:js": "node --check ui/account-menu.js && node --check ui/thread-subscription.js && node --check ui/ui-test-bridge.cjs",
-    "check:python": "python3 -m py_compile scripts/patch_app.py scripts/check_release.py",
+    "check:python": "python3 -m py_compile scripts/patch_app.py scripts/check_release.py scripts/test_patch_app.py scripts/analyze_asar.py && python3 scripts/test_patch_app.py",
     "check:shell": "bash -n install.sh",
     "release:check": "python3 scripts/check_release.py"
   },

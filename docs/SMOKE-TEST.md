@@ -4,6 +4,13 @@ Complete this checklist on the exact official build recorded in
 `docs/COMPATIBILITY.md` before publishing a release draft. Use a team-backed
 signature and reuse the same Apple team as the previous installed build.
 
+On Intel Macs (macOS 14+, Core capability level while Computer Use is
+unimplemented), skip the Appshots and Computer Use section and additionally
+confirm: the patcher prints `architecture: x86_64`, `codex-mux` and the
+launcher report `x86_64` via `lipo -archs`, no
+`Codex Subscription Router Computer Use.app` is installed, and any helper
+from a previous Full install was retired to `~/.codex-mux/backups`.
+
 ## Build and identity
 
 - Confirm the patcher reports the expected version, build, and ASAR SHA-256.
@@ -45,3 +52,22 @@ signature and reuse the same Apple team as the previous installed build.
 
 Record the tested commit, macOS version, signing team ID, and any deviations in
 the release draft before publishing it.
+
+## Uninstall and reinstall (Core)
+
+There is no dedicated uninstaller. Removal is manual and never touches
+account state:
+
+```sh
+# Quit the app and helper first, then remove only the bundles:
+rm -rf "$HOME/Applications/Codex Subscription Router.app" \
+  "$HOME/Applications/Codex Subscription Router Computer Use.app"
+# Optional: drop the independent Chromium profile (signed-in desktop state):
+rm -rf "$HOME/Library/Application Support/Codex Subscription Router"
+```
+
+The following are intentionally preserved: `~/.codex` (primary credentials),
+`~/.codex-mux` (token, account homes, sticky thread ownership, backups),
+and the official `/Applications/ChatGPT.app`. A later reinstall reuses the
+same state; timestamped backups under `~/.codex-mux/backups` can be deleted
+manually once the rebuilt app passes this checklist.

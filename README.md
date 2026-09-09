@@ -1,5 +1,13 @@
 # Codex Subscription Router
 
+> [!NOTE]
+> **Intel Mac fork.** This branch (`intel-x86_64`) extends the upstream
+> project with Intel `x86_64` support and macOS 13.5+ compatibility in Core
+> mode (multi-subscription routing without the Computer Use helper). Upstream:
+> `https://github.com/b-nnett/codex-subscription-router` (Apple silicon).
+> See [`docs/FORK.md`](docs/FORK.md) for the relationship, differences, and
+> publishing checklist.
+
 ![Multi-subscription account menu](screenshots/account-menu.png)
 
 Use multiple ChatGPT subscriptions from one independent macOS desktop app.
@@ -72,9 +80,9 @@ Codex Subscription Router currently targets:
 
 | Component | Supported value |
 | --- | --- |
-| Platform | macOS on Apple silicon |
-| Official ChatGPT version | `26.803.61601` |
-| Official bundle build | `6396` |
+| Platform | macOS on Apple silicon; Intel (`x86_64`, Core mode) on the `intel-x86_64` branch |
+| Official ChatGPT version | `26.803.61601` (ARM64) / `26.903.61454` (Intel Core) |
+| Official bundle build | `6396` (ARM64) / `8378` (Intel Core) |
 | Go | 1.26 or newer |
 | Node.js | 22.12 or newer |
 
@@ -100,7 +108,7 @@ Run one command. It downloads or updates the source, installs the locked build
 dependency, creates the independently signed app, and launches it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/b-nnett/codex-subscription-router/main/install.sh | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/nurasss/codex-subscription-router/intel-x86_64/install.sh | /bin/bash
 ```
 
 The installer keeps its source checkout in

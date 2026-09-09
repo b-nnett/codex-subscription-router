@@ -2,7 +2,11 @@
 
 set -euo pipefail
 
-readonly REPOSITORY_URL="https://github.com/b-nnett/codex-subscription-router.git"
+readonly DEFAULT_REPOSITORY_URL="https://github.com/nurasss/codex-subscription-router.git"
+# Fork publishers: point this default at your fork so one-command installs and
+# source updates track the fork. It can also be overridden per-run via the
+# CODEX_SUBSCRIPTION_ROUTER_REPOSITORY_URL environment variable.
+readonly REPOSITORY_URL="${CODEX_SUBSCRIPTION_ROUTER_REPOSITORY_URL:-${DEFAULT_REPOSITORY_URL}}"
 readonly DEFAULT_SOURCE_DIR="${HOME}/.codex-subscription-router/source"
 readonly SOURCE_DIR="${CODEX_SUBSCRIPTION_ROUTER_SOURCE_DIR:-${DEFAULT_SOURCE_DIR}}"
 readonly DESTINATION_APP="${HOME}/Applications/Codex Subscription Router.app"
@@ -21,9 +25,16 @@ require_prerequisites() {
     if [ "$(uname -s)" != "Darwin" ]; then
         fail "Codex Subscription Router supports macOS only."
     fi
-    if [ "$(uname -m)" != "arm64" ]; then
-        fail "Codex Subscription Router currently requires Apple silicon."
-    fi
+    local machine_arch
+    machine_arch="$(uname -m)"
+    case "${machine_arch}" in
+        arm64|x86_64)
+            ;;
+        *)
+            fail "unsupported Mac architecture '${machine_arch}'. Codex Subscription Router supports arm64 and x86_64."
+            ;;
+    esac
+    printf 'Detected architecture: %s\n' "${machine_arch}" >&2
     if [ ! -d "/Applications/ChatGPT.app" ]; then
         fail "install the official ChatGPT app in /Applications first."
     fi
@@ -89,8 +100,49 @@ resolve_source_dir() {
     printf '%s\n' "${SOURCE_DIR}"
 }
 
-stop_bundle_processes() {
-    local bundle_path="$1"
+# Enforce the capability-aware macOS floor reported by the patcher:
+# tested Intel Core sources declare deployment targets down to macOS 13.5,
+# while untested Intel sources and Full builds stay at 14.0. Apple-silicon
+# keeps the historical upstream policy (no installer floor).
+require_macos_for_plan() {
+    local plan
+    plan="$(python3 scripts/patch_app.py --print-install-plan)" || fail "could not inspect the official ChatGPT app."
+    local plan_value
+    plan_value() {
+        printf '%s\n' "${plan}" | sed -n "s/^${1}=//p"
+    }
+    local architecture capability minimum source_version source_build
+    architecture="$(plan_value architecture)"
+    capability="$(plan_value capability)"
+    minimum="$(plan_value minimum_macos)"
+    source_version="$(plan_value source_version)"
+    source_build="$(plan_value source_build)"
+    local mode
+    case "${capability}" in
+        core) mode="Core" ;;
+        full) mode="Full" ;;
+        *) mode="Untested" ;;
+    esac
+    local macos_version
+    macos_version="$(sw_vers -productVersion)"
+    printf 'Architecture: %s\nMode: %s\nmacOS: %s\nMinimum supported: %s\nSource: ChatGPT %s (%s)\n' \
+        "${architecture}" "${mode}" "${macos_version}" "${minimum}" \
+        "${source_version}" "${source_build}" >&2
+    if [ "${minimum}" = "none" ] || [ "${minimum}" = "unknown" ]; then
+        return
+    fi
+    local minimum_major="${minimum%%.*}"
+    local minimum_minor="${minimum#*.}"
+    minimum_minor="${minimum_minor%%.*}"
+    local macos_major="${macos_version%%.*}"
+    local macos_rest="${macos_version#*.}"
+    local macos_minor="${macos_rest%%.*}"
+    if [ "${macos_major}" -lt "${minimum_major}" ] || { [ "${macos_major}" -eq "${minimum_major}" ] && [ "${macos_minor}" -lt "${minimum_minor}" ]; }; then
+        fail "this ${mode} build requires macOS ${minimum} or newer; found ${macos_version}."
+    fi
+}
+
+stop_bundle_processes() {    local bundle_path="$1"
     local process_id
     local command_line
     local attempt
@@ -122,6 +174,9 @@ main() {
     project_dir="$(resolve_source_dir)"
     cd "${project_dir}"
 
+    log "Checking macOS compatibility"
+    require_macos_for_plan
+
     log "Installing locked build tools"
     npm ci --ignore-scripts --no-audit --no-fund
 
@@ -134,7 +189,9 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    # The ${array[@]+"${array[@]}"} form keeps `set -u` working with empty
+    # arrays on the macOS system bash (3.2).
+    python3 scripts/patch_app.py ${patch_arguments[@]+"${patch_arguments[@]}"}
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"

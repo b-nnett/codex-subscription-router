@@ -29,6 +29,14 @@ const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
   "read-apps",
   "list-mcp-server-status",
   "login-mcp-server",
+  // Build 8378 calls the app server with RPC names directly instead of the
+  // UI action names above; both spellings carry the routing marker (the
+  // multiplexer strips it before forwarding the strict RPC request).
+  "app/list",
+  "app/installed",
+  "app/read",
+  "mcpServerStatus/list",
+  "mcpServer/oauth/login",
 ]);
 
 function codexMuxScopePluginRequest(method, params) {
@@ -72,6 +80,33 @@ async function codexMuxConsumeRateLimitReset(accountId, input) {
   );
 }
 
+// Guarded consume for the keyed reset-credit query: the mutation row on
+// screen may briefly belong to the previously selected subscription while a
+// refetch is in flight, so refuse to send another account's credit id.
+// When the cache cannot confirm membership, fall through to the server,
+// which validates the credit itself.
+async function codexMuxConsumeResetForAccount(accountId, input, queryClient) {
+  try {
+    const cached = queryClient.getQueryData([
+      `rate-limit-reset-credits`,
+      accountId,
+    ]);
+    const credits = cached?.credits;
+    if (
+      Array.isArray(credits) &&
+      input?.creditId != null &&
+      !credits.some((credit) => credit?.id === input.creditId)
+    ) {
+      throw new Error(
+        "stale reset selection for another subscription; reopen the usage sheet and retry",
+      );
+    }
+  } catch (error) {
+    if (error?.message?.startsWith("stale reset selection")) throw error;
+  }
+  return codexMuxConsumeRateLimitReset(accountId, input);
+}
+
 function CodexMuxUsageModal({
   onClose,
 }) {
@@ -90,10 +125,30 @@ function CodexMuxUseResetAccountState() {
   );
   const [accounts, setAccounts] = kXc.useState(cachedAccounts);
   const [selectedId, setSelectedId] = kXc.useState("primary");
-  const [resetCounts, setResetCounts] = kXc.useState({});
-  const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
+  const resetQueryClient = lt();
+
+  // The native usage modal memoizes its window selection and only recomputes
+  // when query data changes, so switching accounts must invalidate the
+  // reset/status queries immediately. Otherwise the modal keeps showing the
+  // previous account until an unrelated interaction triggers a refetch.
+  const refreshResetQueries = kXc.useCallback(() => {
+    resetQueryClient
+      .invalidateQueries({
+        predicate: (query) => {
+          const root = query.queryKey?.[0];
+          return (
+            root === "rate-limit-reset-credits" || root === "rate-limit-status"
+          );
+        },
+      })
+      .catch(() => {});
+  }, [resetQueryClient]);
 
   const loadAccounts = kXc.useCallback(async () => {
+    // Accounts (with fresh usage windows) drive the native window override
+    // below. Reset counts for display live inside CodexMuxResetAccountSelector
+    // itself: the native header memoizes its children and would otherwise
+    // freeze the first-rendered selector props forever.
     const result = await codexMuxRequest("/accounts");
     const connected = (result.accounts || []).filter(
       (account) => account.connected && account.enabled,
@@ -104,22 +159,11 @@ function CodexMuxUseResetAccountState() {
         ? current
         : connected[0]?.id || "primary",
     );
-    setLoading(false);
-    const entries = await Promise.all(
-      connected.map(async (account) => {
-        try {
-          const resets = await codexMuxRateLimitResets(account.id);
-          return [account.id, Math.max(0, resets.available_count || 0)];
-        } catch {
-          return [account.id, null];
-        }
-      }),
-    );
-    setResetCounts(Object.fromEntries(entries));
-  }, []);
+    refreshResetQueries();
+  }, [refreshResetQueries]);
 
   kXc.useEffect(() => {
-    loadAccounts().catch(() => setLoading(false));
+    loadAccounts().catch(() => {});
   }, [loadAccounts]);
 
   kXc.useEffect(
@@ -141,23 +185,71 @@ function CodexMuxUseResetAccountState() {
   window.__codexMuxResetAccountSelector = (0, e7.jsx)(
     CodexMuxResetAccountSelector,
     {
-      accounts,
-      loading,
-      resetCounts,
-      selectedId: activeId,
-      onSelect: setSelectedId,
+      initialSelectedId: activeId,
+      onSelect: (nextId) => {
+        setSelectedId(nextId);
+        refreshResetQueries();
+      },
     },
   );
 
 }
 
-function CodexMuxResetAccountSelector({
-  accounts,
-  loading,
-  onSelect,
-  resetCounts,
-  selectedId,
-}) {
+function CodexMuxResetAccountSelector({ initialSelectedId, onSelect }) {
+  // Fully self-contained: the native usage-sheet header memoizes its
+  // children, so props handed in at first render would freeze forever.
+  // Internal state re-renders this instance in place instead.
+  const [accounts, setAccounts] = kXc.useState([]);
+  const [loading, setLoading] = kXc.useState(true);
+  const [resetCounts, setResetCounts] = kXc.useState({});
+  const [selectedId, setSelectedId] = kXc.useState(initialSelectedId || null);
+
+  kXc.useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const result = await codexMuxRequest("/accounts");
+        if (!live) return;
+        const connected = (result.accounts || []).filter(
+          (account) => account.connected && account.enabled,
+        );
+        setAccounts(connected);
+        setSelectedId((current) => {
+          if (current && connected.some((account) => account.id === current)) {
+            return current;
+          }
+          const fallback =
+            globalThis.__codexMuxResetAccountId &&
+            connected.some(
+              (account) => account.id === globalThis.__codexMuxResetAccountId,
+            )
+              ? globalThis.__codexMuxResetAccountId
+              : connected[0]?.id || null;
+          return fallback;
+        });
+        setLoading(false);
+        const entries = await Promise.all(
+          connected.map(async (account) => {
+            try {
+              const resets = await codexMuxRateLimitResets(account.id);
+              return [account.id, Math.max(0, resets.available_count || 0)];
+            } catch {
+              return [account.id, null];
+            }
+          }),
+        );
+        if (!live) return;
+        setResetCounts(Object.fromEntries(entries));
+      } catch {
+        if (live) setLoading(false);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (accounts.length === 0 && !loading) return null;
   return (0, e7.jsxs)("div", {
     className: "pt-4",
     children: [
@@ -189,7 +281,10 @@ function CodexMuxResetAccountSelector({
                       : "text-token-text-secondary",
                   ].join(" "),
                   "aria-pressed": selected,
-                  onClick: () => onSelect(account.id),
+                  onClick: () => {
+                    setSelectedId(account.id);
+                    onSelect(account.id);
+                  },
                   children: [
                     (0, e7.jsx)(CodexMuxAccountAvatar, {
                       imageUrl: account.profileImageUrl,
@@ -613,6 +708,7 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
   const [selectedId, setSelectedId] = kXc.useState(
     globalThis.__codexMuxSelectedProfileAccountId || null,
   );
+  const profileQueryClient = lt();
   kXc.useEffect(() => {
     let live = true;
     codexMuxRequest("/accounts")
@@ -669,6 +765,11 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
               globalThis.__codexMuxSelectedProfileAccountId = nextId;
               setSelectedId(nextId);
               onSelect?.();
+              profileQueryClient
+                .invalidateQueries({
+                  predicate: (query) => query.queryKey?.[0] === "profile",
+                })
+                .catch(() => {});
             },
             children: (0, e7.jsx)(CodexMuxAccountAvatar, {
               imageUrl: account.profileImageUrl,
