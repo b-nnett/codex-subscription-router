@@ -1467,14 +1467,14 @@ ACCOUNT_MENU_8378_PRELUDE_MARKER = "function CodexMuxUsageModal"
 
 ACCOUNT_MENU_8378_RENAMES: tuple[tuple[str, str, int], ...] = (
     ("e7", "dq", 55),
-    ("kXc", "Pyn", 26),
+    ("kXc", "Pyn", 27),
     ("QLs", "tG", 1),
     ("CH", "of", 2),
     ("_H", "Qy", 5),
     ("S2", "MG", 2),
     ("BW", "Zv", 1),
     ("jLa", "uB", 1),
-    ("lt", "vr", 2),
+    ("lt", "vr", 3),
 )
 
 ACCOUNT_MENU_8378_REMNANTS: tuple[str, ...] = (

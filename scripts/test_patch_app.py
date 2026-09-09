@@ -507,6 +507,10 @@ class Transform8378Tests(unittest.TestCase):
         self.assertIn("Zv(modalScope, CodexMuxUsageModal, {})", component)
         self.assertIn("uB(imageUrl || null)", component)
         self.assertIn("const profileQueryClient = vr();", component)
+        # Reset selector switches must invalidate native queries at once,
+        # otherwise the memoized usage modal shows the previous account.
+        self.assertIn("refreshResetQueries", component)
+        self.assertIn("rate-limit-reset-credits", component)
         self.assertNotIn('tone: "danger"', component)
         self.assertNotIn("allowWrap", component)
         for remnant in (

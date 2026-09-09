@@ -100,6 +100,24 @@ function CodexMuxUseResetAccountState() {
   const [selectedId, setSelectedId] = kXc.useState("primary");
   const [resetCounts, setResetCounts] = kXc.useState({});
   const [loading, setLoading] = kXc.useState(cachedAccounts.length === 0);
+  const resetQueryClient = lt();
+
+  // The native usage modal memoizes its window selection and only recomputes
+  // when query data changes, so switching accounts must invalidate the
+  // reset/status queries immediately. Otherwise the modal keeps showing the
+  // previous account until an unrelated interaction triggers a refetch.
+  const refreshResetQueries = kXc.useCallback(() => {
+    resetQueryClient
+      .invalidateQueries({
+        predicate: (query) => {
+          const root = query.queryKey?.[0];
+          return (
+            root === "rate-limit-reset-credits" || root === "rate-limit-status"
+          );
+        },
+      })
+      .catch(() => {});
+  }, [resetQueryClient]);
 
   const loadAccounts = kXc.useCallback(async () => {
     const result = await codexMuxRequest("/accounts");
@@ -124,7 +142,8 @@ function CodexMuxUseResetAccountState() {
       }),
     );
     setResetCounts(Object.fromEntries(entries));
-  }, []);
+    refreshResetQueries();
+  }, [refreshResetQueries]);
 
   kXc.useEffect(() => {
     loadAccounts().catch(() => setLoading(false));
@@ -153,7 +172,10 @@ function CodexMuxUseResetAccountState() {
       loading,
       resetCounts,
       selectedId: activeId,
-      onSelect: setSelectedId,
+      onSelect: (nextId) => {
+        setSelectedId(nextId);
+        refreshResetQueries();
+      },
     },
   );
 
