@@ -31,13 +31,6 @@ require_prerequisites() {
             ;;
     esac
     printf 'Detected architecture: %s\n' "${machine_arch}" >&2
-    local macos_version
-    macos_version="$(sw_vers -productVersion)"
-    printf 'Detected macOS: %s\n' "${macos_version}" >&2
-    local macos_major="${macos_version%%.*}"
-    if [ "${machine_arch}" = "x86_64" ] && [ "${macos_major}" -lt 14 ]; then
-        fail "Intel Macs require macOS 14 or newer; found ${macos_version}."
-    fi
     if [ ! -d "/Applications/ChatGPT.app" ]; then
         fail "install the official ChatGPT app in /Applications first."
     fi
@@ -103,8 +96,49 @@ resolve_source_dir() {
     printf '%s\n' "${SOURCE_DIR}"
 }
 
-stop_bundle_processes() {
-    local bundle_path="$1"
+# Enforce the capability-aware macOS floor reported by the patcher:
+# tested Intel Core sources declare deployment targets down to macOS 13.5,
+# while untested Intel sources and Full builds stay at 14.0. Apple-silicon
+# keeps the historical upstream policy (no installer floor).
+require_macos_for_plan() {
+    local plan
+    plan="$(python3 scripts/patch_app.py --print-install-plan)" || fail "could not inspect the official ChatGPT app."
+    local plan_value
+    plan_value() {
+        printf '%s\n' "${plan}" | sed -n "s/^${1}=//p"
+    }
+    local architecture capability minimum source_version source_build
+    architecture="$(plan_value architecture)"
+    capability="$(plan_value capability)"
+    minimum="$(plan_value minimum_macos)"
+    source_version="$(plan_value source_version)"
+    source_build="$(plan_value source_build)"
+    local mode
+    case "${capability}" in
+        core) mode="Core" ;;
+        full) mode="Full" ;;
+        *) mode="Untested" ;;
+    esac
+    local macos_version
+    macos_version="$(sw_vers -productVersion)"
+    printf 'Architecture: %s\nMode: %s\nmacOS: %s\nMinimum supported: %s\nSource: ChatGPT %s (%s)\n' \
+        "${architecture}" "${mode}" "${macos_version}" "${minimum}" \
+        "${source_version}" "${source_build}" >&2
+    if [ "${minimum}" = "none" ] || [ "${minimum}" = "unknown" ]; then
+        return
+    fi
+    local minimum_major="${minimum%%.*}"
+    local minimum_minor="${minimum#*.}"
+    minimum_minor="${minimum_minor%%.*}"
+    local macos_major="${macos_version%%.*}"
+    local macos_rest="${macos_version#*.}"
+    local macos_minor="${macos_rest%%.*}"
+    if [ "${macos_major}" -lt "${minimum_major}" ] || { [ "${macos_major}" -eq "${minimum_major}" ] && [ "${macos_minor}" -lt "${minimum_minor}" ]; }; then
+        fail "this ${mode} build requires macOS ${minimum} or newer; found ${macos_version}."
+    fi
+}
+
+stop_bundle_processes() {    local bundle_path="$1"
     local process_id
     local command_line
     local attempt
@@ -136,6 +170,9 @@ main() {
     project_dir="$(resolve_source_dir)"
     cd "${project_dir}"
 
+    log "Checking macOS compatibility"
+    require_macos_for_plan
+
     log "Installing locked build tools"
     npm ci --ignore-scripts --no-audit --no-fund
 
@@ -148,7 +185,9 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    # The ${array[@]+"${array[@]}"} form keeps `set -u` working with empty
+    # arrays on the macOS system bash (3.2).
+    python3 scripts/patch_app.py ${patch_arguments[@]+"${patch_arguments[@]}"}
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"

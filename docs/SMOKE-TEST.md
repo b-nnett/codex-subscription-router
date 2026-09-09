@@ -52,3 +52,22 @@ from a previous Full install was retired to `~/.codex-mux/backups`.
 
 Record the tested commit, macOS version, signing team ID, and any deviations in
 the release draft before publishing it.
+
+## Uninstall and reinstall (Core)
+
+There is no dedicated uninstaller. Removal is manual and never touches
+account state:
+
+```sh
+# Quit the app and helper first, then remove only the bundles:
+rm -rf "$HOME/Applications/Codex Subscription Router.app" \
+  "$HOME/Applications/Codex Subscription Router Computer Use.app"
+# Optional: drop the independent Chromium profile (signed-in desktop state):
+rm -rf "$HOME/Library/Application Support/Codex Subscription Router"
+```
+
+The following are intentionally preserved: `~/.codex` (primary credentials),
+`~/.codex-mux` (token, account homes, sticky thread ownership, backups),
+and the official `/Applications/ChatGPT.app`. A later reinstall reuses the
+same state; timestamped backups under `~/.codex-mux/backups` can be deleted
+manually once the rebuilt app passes this checklist.

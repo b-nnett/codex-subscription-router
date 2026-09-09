@@ -253,6 +253,15 @@ def parse_args() -> argparse.Namespace:
             "the default for untested sources is a Core build without Computer Use."
         ),
     )
+    parser.add_argument(
+        "--print-install-plan",
+        action="store_true",
+        help=(
+            "Print the detected source architecture, capability level, and "
+            "minimum macOS as key=value lines without building anything. "
+            "Used by install.sh for the capability-aware OS requirement."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1049,6 +1058,87 @@ def lookup_renderer_compatibility(
         ):
             return profile
     return None
+
+
+# Minimum macOS versions follow measured deployment targets, not guesses:
+# Intel Core build 8378 declares LSMinimumSystemVersion 13.0 with minos 13.0
+# on the main executable, the Electron framework, and every helper, except
+# the bundled cua Node runtime at minos 13.5 (verified with otool
+# LC_BUILD_VERSION). Untested Intel sources and any Full (Computer Use)
+# build stay at the conservative 14.0 floor. Apple-silicon keeps the
+# historical upstream policy (no installer floor).
+INTEL_CORE_MINIMUM_MACOS = (13, 5)
+INTEL_FULL_MINIMUM_MACOS = (14, 0)
+
+
+def minimum_macos_for_capability(
+    architecture: str, computer_use_enabled: bool
+) -> tuple[int, int] | None:
+    """Return the minimum (major, minor) macOS for an arch/capability pair.
+
+    Returns None when the installer enforces no floor for that pair.
+    """
+    if architecture == "x86_64":
+        if computer_use_enabled:
+            return INTEL_FULL_MINIMUM_MACOS
+        return INTEL_CORE_MINIMUM_MACOS
+    if architecture == "arm64":
+        return None
+    raise RuntimeError(
+        f"unsupported target architecture: {architecture!r}; "
+        f"supported architectures: {', '.join(SUPPORTED_ARCHITECTURES)}"
+    )
+
+
+def install_plan(source: Path, enable_computer_use: bool = False) -> dict[str, str]:
+    """Describe the planned build without changing anything on disk.
+
+    Values are best-effort "unknown" strings when the source cannot be read;
+    capability is "core", "full", or "untested" (an untested source never
+    reports a tested capability, so the installer stays conservative).
+    """
+    resolved = source.expanduser()
+    version = build = architecture = asar_sha256 = "unknown"
+    capability = "untested"
+    try:
+        with (resolved / "Contents" / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        version = str(info.get("CFBundleShortVersionString", "unknown"))
+        build = str(info.get("CFBundleVersion", "unknown"))
+        architecture = detect_source_architecture(resolved)
+        asar_sha256 = hashlib.sha256(
+            (resolved / "Contents" / "Resources" / "app.asar").read_bytes()
+        ).hexdigest()
+    except (OSError, plistlib.InvalidFileException, RuntimeError):
+        pass
+    compatibility = (
+        lookup_source_compatibility(version, build, architecture, asar_sha256)
+        if architecture in SUPPORTED_ARCHITECTURES
+        else None
+    )
+    if compatibility is not None:
+        capability = "full" if compatibility.computer_use_supported else "core"
+    # An untested source never gets the relaxed Core floor: without a proven
+    # anchor set and deployment-target audit, Intel stays conservative.
+    conservative_full = capability == "full" or (
+        capability == "untested" and architecture == "x86_64"
+    )
+    try:
+        minimum = minimum_macos_for_capability(
+            architecture, conservative_full or enable_computer_use
+        )
+    except RuntimeError:
+        minimum = INTEL_FULL_MINIMUM_MACOS if architecture == "x86_64" else None
+    return {
+        "source": str(resolved),
+        "source_version": version,
+        "source_build": build,
+        "architecture": architecture,
+        "capability": capability,
+        "minimum_macos": (
+            "none" if minimum is None else f"{minimum[0]}.{minimum[1]}"
+        ),
+    }
 
 
 def check_js_module_syntax(path: Path) -> None:
@@ -2277,6 +2367,22 @@ def patch_app(
 
 def main() -> int:
     args = parse_args()
+    if args.print_install_plan:
+        try:
+            plan = install_plan(args.source, args.enable_computer_use)
+        except (RuntimeError, OSError) as error:
+            print(f"install plan failed: {error}", file=sys.stderr)
+            return 1
+        for key in (
+            "source",
+            "source_version",
+            "source_build",
+            "architecture",
+            "capability",
+            "minimum_macos",
+        ):
+            print(f"{key}={plan[key]}")
+        return 0
     try:
         patch_app(
             args.source,

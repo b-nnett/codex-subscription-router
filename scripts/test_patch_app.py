@@ -738,5 +738,116 @@ class Patch8378FixtureTests(unittest.TestCase):
                 patch_app.patch_thread_8378(root, TEST_TOKEN_8378)
 
 
+class InstallPolicyTests(unittest.TestCase):
+    def test_minimum_macos_matrix(self) -> None:
+        self.assertEqual(
+            patch_app.minimum_macos_for_capability("x86_64", False), (13, 5)
+        )
+        self.assertEqual(
+            patch_app.minimum_macos_for_capability("x86_64", True), (14, 0)
+        )
+        self.assertIsNone(patch_app.minimum_macos_for_capability("arm64", False))
+        self.assertIsNone(patch_app.minimum_macos_for_capability("arm64", True))
+        with self.assertRaises(RuntimeError):
+            patch_app.minimum_macos_for_capability("ppc", False)
+
+    def test_minimum_constants_follow_measured_targets(self) -> None:
+        # cua Node runtime (minos 13.5) is the highest measured Intel Core
+        # deployment target; Full stays at the conservative 14.0 floor.
+        self.assertEqual(patch_app.INTEL_CORE_MINIMUM_MACOS, (13, 5))
+        self.assertEqual(patch_app.INTEL_FULL_MINIMUM_MACOS, (14, 0))
+
+    def test_plan_for_unknown_source_is_untested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = patch_app.install_plan(Path(temporary) / "missing.app")
+        self.assertEqual(plan["capability"], "untested")
+        self.assertEqual(plan["architecture"], "unknown")
+        self.assertEqual(plan["minimum_macos"], "none")
+
+    def test_plan_for_unapproved_build_stays_conservative(self) -> None:
+        import plistlib
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Fake.app"
+            macos = app / "Contents" / "MacOS"
+            macos.mkdir(parents=True)
+            with (app / "Contents" / "Info.plist").open("wb") as handle:
+                plistlib.dump(
+                    {
+                        "CFBundleExecutable": "ChatGPT",
+                        "CFBundleShortVersionString": "99.0",
+                        "CFBundleVersion": "1",
+                    },
+                    handle,
+                )
+            shutil.copyfile("/bin/ls", macos / "ChatGPT")
+            (app / "Contents" / "Resources").mkdir(parents=True)
+            (app / "Contents" / "Resources" / "app.asar").write_bytes(b"fake")
+            plan = patch_app.install_plan(app)
+        self.assertEqual(plan["capability"], "untested")
+        if host_arch() == "x86_64":
+            self.assertEqual(plan["minimum_macos"], "14.0")
+        else:
+            self.assertEqual(plan["architecture"], host_arch())
+
+    def test_plan_for_tested_intel_core(self) -> None:
+        found = patch_app.lookup_source_compatibility(
+            "26.903.61454",
+            "8378",
+            "x86_64",
+            "a5f9500e023a65f98dafca3a24a3c0fdf23646caf961b8b3df960d6057e7b450",
+        )
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertFalse(found.computer_use_supported)
+        self.assertEqual(
+            patch_app.minimum_macos_for_capability(
+                found.architecture, found.computer_use_supported
+            ),
+            (13, 5),
+        )
+
+
+class UpdateSafetyTests(unittest.TestCase):
+    def test_unknown_build_gets_no_renderer_profile(self) -> None:
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("99.0", "1", "x86_64")
+        )
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("26.903.61454", "8379", "x86_64")
+        )
+
+    def test_unknown_build_gets_no_source_profile(self) -> None:
+        self.assertIsNone(
+            patch_app.lookup_source_compatibility(
+                "26.903.61454", "8379", "x86_64", "0" * 64
+            )
+        )
+
+    def test_legacy_path_fails_closed_on_split_bundle(self) -> None:
+        # An unfamiliar (or newer) bundle must not be patched with stale
+        # anchors: the legacy path raises instead of partially patching.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary), {"app-initial-fixture.js": APP_PRIMARY_FIXTURE_8378}
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_renderer_legacy(root, TEST_TOKEN_8378)
+
+    def test_8378_anchors_are_not_applied_to_unknown_build(self) -> None:
+        # The split anchor set is only reachable through an exact renderer
+        # profile lookup; there is no build-name fallback.
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("26.903.61454", "8378", "arm64")
+        )
+        profiles = [
+            (profile.version, profile.build, profile.architecture)
+            for profile in patch_app.RENDERER_PROFILES
+        ]
+        self.assertIn(("26.903.61454", "8378", "x86_64"), profiles)
+        self.assertIn(("26.803.61601", "6396", "arm64"), profiles)
+
+
 if __name__ == "__main__":
     unittest.main()
