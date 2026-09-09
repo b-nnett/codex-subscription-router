@@ -29,6 +29,14 @@ const CODEX_MUX_ACCOUNT_SCOPED_PLUGIN_METHODS = new Set([
   "read-apps",
   "list-mcp-server-status",
   "login-mcp-server",
+  // Build 8378 calls the app server with RPC names directly instead of the
+  // UI action names above; both spellings carry the routing marker (the
+  // multiplexer strips it before forwarding the strict RPC request).
+  "app/list",
+  "app/installed",
+  "app/read",
+  "mcpServerStatus/list",
+  "mcpServer/oauth/login",
 ]);
 
 function codexMuxScopePluginRequest(method, params) {
@@ -613,6 +621,7 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
   const [selectedId, setSelectedId] = kXc.useState(
     globalThis.__codexMuxSelectedProfileAccountId || null,
   );
+  const profileQueryClient = lt();
   kXc.useEffect(() => {
     let live = true;
     codexMuxRequest("/accounts")
@@ -669,6 +678,11 @@ function CodexMuxProfileAvatarStack({ onSelect }) {
               globalThis.__codexMuxSelectedProfileAccountId = nextId;
               setSelectedId(nextId);
               onSelect?.();
+              profileQueryClient
+                .invalidateQueries({
+                  predicate: (query) => query.queryKey?.[0] === "profile",
+                })
+                .catch(() => {});
             },
             children: (0, e7.jsx)(CodexMuxAccountAvatar, {
               imageUrl: account.profileImageUrl,

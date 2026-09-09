@@ -125,3 +125,10 @@ fail-closed on the renderer for this build instead of weakening any
    identifiers, new rate-limit/depletion response shapes.
 5. Updater bootstrap shape changed (still disabled deterministically).
 6. Device-permission natives moved to `@worklouder/device-kit-oai`.
+
+## Outcome
+
+The renderer drift above was resolved by the `split` anchor set in
+`docs/INTEL-RENDERER-8378.md` (all anchors `count == 1` on this exact
+build, post-patch `node --check` green). Build 8378 is now an allow-listed
+Core source; the Computer Use findings (no Intel helper binary) stand.

@@ -15,6 +15,11 @@ this project uses [Semantic Versioning](https://semver.org/).
   stays fail-closed until an Intel instruction pattern is proven.
 - Intel audit (`docs/INTEL-AUDIT.md`) and Intel E2E report
   (`docs/INTEL-E2E-REPORT.md`).
+- Build-8378 Intel renderer support (`docs/INTEL-RENDERER-8378.md`,
+  `scripts/analyze_asar.py`): split `app-initial`/`app-primary` anchor set
+  with exact occurrence checks and post-patch syntax validation, plus an
+  allow-listed Core compatibility profile for ChatGPT 26.903.61454/8378 on
+  `x86_64`.
 - One-command installer with safe source updates, prerequisite checks, signed
   rebuilds, recoverable upgrades, and automatic launch.
 - Reset-aware routing that prioritizes weekly quota at risk of expiring and

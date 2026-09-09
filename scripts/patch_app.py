@@ -82,6 +82,13 @@ TESTED_SOURCES: tuple[SourceCompatibility, ...] = (
         asar_sha256="d5a44ed9e2f1db5f81dbbe85408aed256f3203c5b16f00817bb9d7cd941343cf",
         computer_use_supported=True,
     ),
+    SourceCompatibility(
+        version="26.903.61454",
+        build="8378",
+        architecture="x86_64",
+        asar_sha256="a5f9500e023a65f98dafca3a24a3c0fdf23646caf961b8b3df960d6057e7b450",
+        computer_use_supported=False,
+    ),
 )
 # Backwards-compatible lookup keyed by (version, build) for the original
 # Apple-silicon source. New code must use TESTED_SOURCES / lookup functions
@@ -822,6 +829,15 @@ def sign_computer_use_code(
     for executable_name in ("node", "node_repl"):
         executable = resources / "cua_node" / "bin" / executable_name
         sign_runtime_executable(executable, identity)
+
+
+def sign_main_executable(app: Path, identity: str) -> None:
+    """Re-sign the desktop main executable after the bundle Info.plist changes.
+
+    The bundle seal covers the modified Info.plist, so the main executable
+    must be re-signed too; otherwise `--deep --strict` verification reports an
+    invalid Info.plist. This is independent of Computer Use.
+    """
     sign_runtime_executable(
         app / "Contents" / "MacOS" / "ChatGPT",
         identity,
@@ -849,6 +865,7 @@ def sign_independent_app(
             expected_identifier_replacements=expected_cua_identifier_replacements,
         )
         sign_computer_use_code(app, identity, computer_use_entitlements)
+    sign_main_executable(app, identity)
     run(
         [
             "codesign",
@@ -962,7 +979,104 @@ def ensure_asar_tool() -> Path:
     return asar
 
 
-def patch_renderer(extracted: Path, token: str) -> None:
+def require_unique(text: str, anchor: str, description: str) -> None:
+    """Fail closed unless an anchor occurs exactly once."""
+    count = text.count(anchor)
+    if count != 1:
+        raise RuntimeError(
+            f"could not find {description} "
+            f"(found {count}; expected exactly 1)"
+        )
+
+
+def replace_unique(text: str, anchor: str, replacement: str, description: str) -> str:
+    """Replace an anchor that must occur exactly once."""
+    require_unique(text, anchor, description)
+    return text.replace(anchor, replacement, 1)
+
+
+def replace_identifier(
+    text: str, old: str, new: str, expected: int, description: str
+) -> str:
+    """Rename an identifier, matching whole tokens only (never substrings)."""
+    pattern = re.compile(rf"(?<![\w$]){re.escape(old)}(?![\w$])")
+    matches = pattern.findall(text)
+    if len(matches) != expected:
+        raise RuntimeError(
+            f"could not map {description}: found {len(matches)} "
+            f"occurrences of {old!r}, expected exactly {expected}"
+        )
+    return pattern.sub(lambda _: new, text)
+
+
+@dataclass(frozen=True)
+class RendererCompatibility:
+    """A tested renderer anchor set for one build and architecture."""
+
+    version: str
+    build: str
+    architecture: str
+    layout: str  # "legacy" (6396 single bundle) or "split" (8378 two bundles)
+
+
+RENDERER_PROFILES: tuple[RendererCompatibility, ...] = (
+    RendererCompatibility(
+        version="26.803.61601",
+        build="6396",
+        architecture="arm64",
+        layout="legacy",
+    ),
+    RendererCompatibility(
+        version="26.903.61454",
+        build="8378",
+        architecture="x86_64",
+        layout="split",
+    ),
+)
+
+
+def lookup_renderer_compatibility(
+    version: str,
+    build: str,
+    architecture: str,
+) -> RendererCompatibility | None:
+    """Return the renderer anchor set for an exact build, if one is known."""
+    for profile in RENDERER_PROFILES:
+        if (
+            profile.version == version
+            and profile.build == build
+            and profile.architecture == architecture
+        ):
+            return profile
+    return None
+
+
+def check_js_module_syntax(path: Path) -> None:
+    """Validate a patched ESM bundle with node --check via a .mjs copy."""
+    with tempfile.TemporaryDirectory(prefix=".codex-syntax-") as temporary:
+        probe = Path(temporary) / (path.stem + ".syntax-check.mjs")
+        shutil.copy2(path, probe)
+        subprocess.run(["node", "--check", str(probe)], check=True)
+
+
+def patch_renderer(
+    extracted: Path,
+    token: str,
+    renderer: RendererCompatibility | None,
+) -> None:
+    """Dispatch renderer patching to the build-specific anchor set.
+
+    An unknown build keeps the legacy anchor set, which stays fail-closed on
+    unfamiliar bundles instead of guessing.
+    """
+    patch_renderer_csp(extracted, token)
+    if renderer is not None and renderer.layout == "split":
+        patch_renderer_8378(extracted, token)
+    else:
+        patch_renderer_legacy(extracted, token)
+
+
+def patch_renderer_csp(extracted: Path, token: str) -> None:
     webview = extracted / "webview"
     index_path = webview / "index.html"
     index = index_path.read_text(encoding="utf-8")
@@ -977,6 +1091,10 @@ def patch_renderer(extracted: Path, token: str) -> None:
     )
     index_path.write_text(index, encoding="utf-8")
 
+
+def patch_renderer_legacy(extracted: Path, token: str) -> None:
+    """Apply the build-6396 single-bundle anchor set (Apple silicon)."""
+    webview = extracted / "webview"
     initial_bundles = list((webview / "assets").glob("app-initial-*.js"))
     if len(initial_bundles) != 1:
         raise RuntimeError(
@@ -1248,6 +1366,439 @@ def patch_renderer(extracted: Path, token: str) -> None:
     thread_bundle_path.write_text(thread_bundle, encoding="utf-8")
 
 
+    thread_bundle_path.write_text(thread_bundle, encoding="utf-8")
+
+
+# --- Build-8378 (Intel x86_64, split renderer) anchor set -------------------
+# Every anchor below was counted (count == 1) on ChatGPT 26.903.61454/8378.
+# See docs/INTEL-RENDERER-8378.md for the semantic mapping from build 6396.
+
+ACCOUNT_MENU_8378_PRELUDE_MARKER = "function CodexMuxUsageModal"
+
+ACCOUNT_MENU_8378_RENAMES: tuple[tuple[str, str, int], ...] = (
+    ("e7", "dq", 55),
+    ("kXc", "Pyn", 26),
+    ("QLs", "tG", 1),
+    ("CH", "of", 2),
+    ("_H", "Qy", 5),
+    ("S2", "MG", 2),
+    ("BW", "Zv", 1),
+    ("jLa", "uB", 1),
+    ("lt", "vr", 2),
+)
+
+ACCOUNT_MENU_8378_REMNANTS: tuple[str, ...] = (
+    "e7",
+    "kXc",
+    "QLs",
+    "CH",
+    "_H",
+    "S2",
+    "BW",
+    "jLa",
+)
+
+ACCOUNT_MENU_8378_UNVERIFIED_PROPS_ANCHOR = (
+    '          tone: "danger",\n'
+    "          allowWrap: true,\n"
+    "          subTextAllowWrap: true,\n"
+)
+
+THREAD_SUBSCRIPTION_8378_RENAMES: tuple[tuple[str, str, int], ...] = (
+    ("zE", "cE", 6),
+    ("TE", "Uk", 2),
+    ("K", "Z", 1),
+)
+
+
+def app_initial_prelude_8378(token: str) -> str:
+    """Extract the self-contained request helpers for the app-initial bundle.
+
+    The prelude is the top of ui/account-menu.js (control API client, plugin
+    scope marker, profile/reset fetchers). It must reference no upstream
+    bundle identifiers so it can be prepended to another module safely.
+    """
+    source = (PROJECT_ROOT / "ui" / "account-menu.js").read_text(encoding="utf-8")
+    if ACCOUNT_MENU_8378_PRELUDE_MARKER not in source:
+        raise RuntimeError("could not locate the account-menu prelude boundary")
+    prelude = source.split(ACCOUNT_MENU_8378_PRELUDE_MARKER)[0]
+    for helper in (
+        "codexMuxScopePluginRequest",
+        "codexMuxRequest",
+        "codexMuxProfileData",
+        "codexMuxRateLimitResets",
+        "codexMuxConsumeRateLimitReset",
+    ):
+        if f"function {helper}" not in prelude and f"async function {helper}" not in prelude:
+            raise RuntimeError(
+                f"the account-menu prelude no longer defines {helper}; "
+                "review the app-initial injection"
+            )
+    for upstream in (
+        "e7",
+        "kXc",
+        "QLs",
+        "CH",
+        "_H",
+        "S2",
+        "BW",
+        "jLa",
+        "lt",
+        "Pyn",
+        "Qy",
+    ):
+        if re.search(rf"(?<![\w$]){re.escape(upstream)}(?![\w$])", prelude):
+            raise RuntimeError(
+                f"the account-menu prelude must stay free of upstream "
+                f"identifiers, but references {upstream!r}"
+            )
+    prelude = prelude.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT))
+    return prelude.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
+
+
+def transform_account_menu_8378(token: str) -> str:
+    """Adapt the account menu component to the 8378 app-primary scope."""
+    component = (PROJECT_ROOT / "ui" / "account-menu.js").read_text(encoding="utf-8")
+    component = component.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT))
+    component = component.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
+    for old, new, expected in ACCOUNT_MENU_8378_RENAMES:
+        component = replace_identifier(component, old, new, expected, f"8378 {old!r}")
+    scope_anchor = "const modalScope = Lo(Q);"
+    component = replace_unique(
+        component, scope_anchor, "const modalScope = fo(HE);", "the 8378 modal scope"
+    )
+    component = replace_unique(
+        component,
+        ACCOUNT_MENU_8378_UNVERIFIED_PROPS_ANCHOR,
+        "",
+        "the unverified 8378 menu-row props",
+    )
+    for remnant in ACCOUNT_MENU_8378_REMNANTS:
+        if re.search(rf"(?<![\w$]){re.escape(remnant)}(?![\w$])", component):
+            raise RuntimeError(
+                f"the transformed 8378 account menu still references {remnant!r}"
+            )
+    if re.search(r"(?<![\w$])Lo\(|\bQ\)", component):
+        raise RuntimeError(
+            "the transformed 8378 account menu still references the legacy modal scope"
+        )
+    return component
+
+
+def transform_thread_subscription_8378(token: str) -> str:
+    """Adapt the thread subscription indicator to the 8378 thread chunk."""
+    component = (PROJECT_ROOT / "ui" / "thread-subscription.js").read_text(
+        encoding="utf-8"
+    )
+    component = component.replace("__CODEX_MUX_CONTROL_PORT__", str(CONTROL_PORT))
+    component = component.replace("__CODEX_MUX_CONTROL_TOKEN__", token)
+    component = replace_unique(
+        component,
+        "$n(sr)",
+        "ve(ds)",
+        "the 8378 thread route hook",
+    )
+    for old, new, expected in THREAD_SUBSCRIPTION_8378_RENAMES:
+        component = replace_identifier(component, old, new, expected, f"8378 {old!r}")
+    for remnant in ("$n", "sr", "zE", "TE"):
+        if re.search(rf"(?<![\w$]){re.escape(remnant)}(?![\w$])", component):
+            raise RuntimeError(
+                f"the transformed 8378 thread component still references {remnant!r}"
+            )
+    return component
+
+
+def patch_app_initial_8378(extracted: Path, token: str) -> None:
+    """Patch the 8378 RPC/query bundle (app-initial)."""
+    webview = extracted / "webview"
+    initial_bundles = list((webview / "assets").glob("app-initial-*.js"))
+    if len(initial_bundles) != 1:
+        raise RuntimeError(
+            f"expected one ChatGPT initial renderer bundle, found {len(initial_bundles)}"
+        )
+    bundle_path = initial_bundles[0]
+    bundle = bundle_path.read_text(encoding="utf-8")
+    if "function CodexMuxAccountMenu(" in bundle or "codexMuxScopePluginRequest" in bundle:
+        raise RuntimeError("source app already contains the Codex multiplexer hooks")
+
+    # Fail-closed verification that the plugin RPC wiring is the reviewed one.
+    for anchor, description in (
+        ('"app/list"', "the app/list RPC"),
+        ('"app/installed"', "the app/installed RPC"),
+        ('"app/read"', "the app/read RPC"),
+        ('"mcpServer/oauth/login":`mcp`', "the MCP OAuth login RPC mapping"),
+        ('"mcpServerStatus/list":`mcp`', "the MCP status RPC mapping"),
+        (
+            "listMcpServers(e,t){let n=JSON.stringify({options:t,params:e})",
+            "the MCP status request method",
+        ),
+    ):
+        require_unique(bundle, anchor, description)
+
+    prelude = app_initial_prelude_8378(token)
+    bundle = prelude + "\n" + bundle
+
+    bridge_anchor = (
+        "async sendRequest(e,t,n){if(this.dispatchMessage==null)"
+        "throw Error(`AppServerRequestClient is missing a message dispatcher`);"
+        "return e===`config/read`?this.sendConfigReadRequest(t,n):"
+        "this.enqueueRequest(e,t,"
+        "e===`plugin/list`&&n?.timeoutMs==null?{...n,timeoutMs:cwn}:n)}"
+    )
+    bundle = replace_unique(
+        bundle,
+        bridge_anchor,
+        bridge_anchor.replace(
+            "this.enqueueRequest(e,t,",
+            "this.enqueueRequest(e,codexMuxScopePluginRequest(e,t),",
+            1,
+        ),
+        "the native app-server request bridge",
+    )
+
+    profile_query_anchor = "let e=await vO.safeGet(`/wham/profiles/me`)"
+    bundle = replace_unique(
+        bundle,
+        profile_query_anchor,
+        "let e=await codexMuxProfileData("
+        "globalThis.__codexMuxSelectedProfileAccountId??null)",
+        "the native profile stats request",
+    )
+
+    reset_query_key_anchor = "t={queryKey:[`rate-limit-reset-credits`],queryFn:C5i,"
+    bundle = replace_unique(
+        bundle,
+        reset_query_key_anchor,
+        "t={queryKey:[`rate-limit-reset-credits`,"
+        "window.__codexMuxResetAccountId??`primary`],"
+        "queryFn:window.__codexMuxResetAccountId!=null?"
+        "()=>codexMuxRateLimitResets(window.__codexMuxResetAccountId):C5i,",
+        "the native reset-credit query",
+    )
+
+    reset_mutation_anchor = "r={mutationFn:T5i,"
+    bundle = replace_unique(
+        bundle,
+        reset_mutation_anchor,
+        "r={mutationFn:window.__codexMuxResetAccountId!=null?"
+        "e=>codexMuxConsumeRateLimitReset(window.__codexMuxResetAccountId,e):T5i,",
+        "the native reset-credit mutation",
+    )
+    reset_key_suffix = ",window.__codexMuxResetAccountId??`primary`"
+    bundle = replace_unique(
+        bundle,
+        "t.setQueryData([`rate-limit-reset-credits`],e=>s8i(e,a,n))",
+        "t.setQueryData([`rate-limit-reset-credits`"
+        f"{reset_key_suffix}],e=>s8i(e,a,n))",
+        "the native reset-credit mutation cache update",
+    )
+    bundle = replace_unique(
+        bundle,
+        "Promise.all([n([`rate-limit-status`]),n([`rate-limit-reset-credits`])])",
+        "Promise.all([n([`rate-limit-status`]),"
+        "n([`rate-limit-reset-credits`"
+        f"{reset_key_suffix}])])",
+        "the native reset-credit mutation invalidation",
+    )
+
+    bundle_path.write_text(bundle, encoding="utf-8")
+    check_js_module_syntax(bundle_path)
+
+
+def patch_app_primary_8378(extracted: Path, token: str) -> None:
+    """Patch the 8378 sidebar/menu/modal bundle (app-primary)."""
+    webview = extracted / "webview"
+    primary_bundles = list((webview / "assets").glob("app-primary-*.js"))
+    if len(primary_bundles) != 1:
+        raise RuntimeError(
+            f"expected one ChatGPT primary renderer bundle, found {len(primary_bundles)}"
+        )
+    bundle_path = primary_bundles[0]
+    bundle = bundle_path.read_text(encoding="utf-8")
+    if "function CodexMuxAccountMenu(" in bundle:
+        raise RuntimeError("source app already contains the Codex multiplexer menu")
+
+    component = transform_account_menu_8378(token)
+    component_anchor = (
+        "function kyn(e){let t=(0,uq.c)(223),{sidebarFooter:n,triggerButton:r}=e"
+    )
+    bundle = replace_unique(
+        bundle,
+        component_anchor,
+        component + "\n" + component_anchor,
+        "the native ChatGPT profile menu component",
+    )
+
+    bundle = replace_unique(
+        bundle,
+        "usageItems:wt",
+        "usageItems:(0,dq.jsx)(CodexMuxAccountMenu,{})",
+        "the native ChatGPT usage menu slot",
+    )
+
+    open_change_anchor = "triggerButton:Ot,onOpenChange:c,children:[F,null]"
+    bundle = replace_unique(
+        bundle,
+        open_change_anchor,
+        open_change_anchor.replace(
+            "onOpenChange:c",
+            "onOpenChange:CodexMuxProfileMenuOpenChange(c)",
+            1,
+        ),
+        "the native profile menu open-state hook",
+    )
+
+    bundle = replace_unique(
+        bundle,
+        "function Adn(e){",
+        "function Adn(e){CodexMuxUseResetAccountState();",
+        "the native Usage modal component",
+    )
+
+    bundle = replace_unique(
+        bundle,
+        "F=D!=null&&T!==`idle`&&!(T===`awaiting-refresh`&&N)?D:j",
+        "F=window.__codexMuxSelectedUsageWindows??"
+        "(D!=null&&T!==`idle`&&!(T===`awaiting-refresh`&&N)?D:j)",
+        "the native usage-window selection",
+    )
+
+    bundle = replace_unique(
+        bundle,
+        "(ge=(0,eG.jsxs)(Eb,{children:[me,he]}",
+        "(ge=(0,eG.jsxs)(Eb,{children:[me,he,"
+        "window.__codexMuxResetAccountSelector??null]}",
+        "the native Usage sheet header",
+    )
+
+    for depleted_anchor in (
+        "defaultMessage:`You’re out of Codex and Work usage`",
+        "defaultMessage:`You’ve used all Codex and Work usage`",
+        "defaultMessage:`You’ve reached your usage limit`",
+    ):
+        bundle = replace_unique(
+            bundle,
+            depleted_anchor,
+            "defaultMessage:`All connected subscriptions are depleted`",
+            "a native subscription depletion alert",
+        )
+
+    bundle_path.write_text(bundle, encoding="utf-8")
+    check_js_module_syntax(bundle_path)
+
+
+def patch_profile_8378(extracted: Path) -> None:
+    """Patch the 8378 Profile settings bundle."""
+    webview = extracted / "webview"
+    candidates = [
+        path
+        for path in (webview / "assets").glob("profile-*.js")
+        if "avatar:(0,$.jsxs)($.Fragment,{children:[(0,$.jsxs)(`label`,"
+        in path.read_text(encoding="utf-8")
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"expected one native Profile settings bundle, found {len(candidates)}"
+        )
+    bundle_path = candidates[0]
+    bundle = bundle_path.read_text(encoding="utf-8")
+    if "CodexMuxProfileAvatarStack" in bundle:
+        raise RuntimeError("source app already contains the Codex profile stack")
+
+    avatar_anchor = "avatar:(0,$.jsxs)($.Fragment,{children:[(0,$.jsxs)(`label`,"
+    bundle = replace_unique(
+        bundle,
+        avatar_anchor,
+        "avatar:(0,$.jsxs)($.Fragment,{children:["
+        "globalThis.CodexMuxProfileAvatarStack?.({})??null,"
+        "(0,$.jsxs)(`label`,",
+        "the native Profile avatar",
+    )
+
+    label_class_anchor = "className:ue(`group relative flex size-20"
+    bundle = replace_unique(
+        bundle,
+        label_class_anchor,
+        "className:globalThis.CodexMuxProfileAvatarStack?`hidden`:ue(`group relative flex size-20",
+        "the native Profile avatar label",
+    )
+
+    bundle_path.write_text(bundle, encoding="utf-8")
+    check_js_module_syntax(bundle_path)
+
+
+def patch_plugins_8378(extracted: Path) -> None:
+    """Patch the 8378 Plugins settings bundle."""
+    webview = extracted / "webview"
+    plugin_scope_anchor = "action:F,children:w})"
+    plugin_bundles = [
+        path
+        for path in (webview / "assets").glob("plugins-settings-*.js")
+        if plugin_scope_anchor in path.read_text(encoding="utf-8")
+    ]
+    if len(plugin_bundles) != 1:
+        raise RuntimeError(
+            f"expected one native Plugins settings bundle, found {len(plugin_bundles)}"
+        )
+    plugin_bundle_path = plugin_bundles[0]
+    plugin_bundle = plugin_bundle_path.read_text(encoding="utf-8")
+    bundle = replace_unique(
+        plugin_bundle,
+        plugin_scope_anchor,
+        "action:F,children:[globalThis.CodexMuxPluginScope?.()??null,w]})",
+        "the native Plugins settings content",
+    )
+    plugin_bundle_path.write_text(bundle, encoding="utf-8")
+    check_js_module_syntax(plugin_bundle_path)
+
+
+def patch_thread_8378(extracted: Path, token: str) -> None:
+    """Patch the 8378 local conversation thread bundle."""
+    webview = extracted / "webview"
+    thread_component_anchor = "function iE(e){let t=(0,sE.c)(37)"
+    thread_bundles = [
+        path
+        for path in (webview / "assets").glob("local-conversation-thread-*.js")
+        if thread_component_anchor in path.read_text(encoding="utf-8")
+    ]
+    if len(thread_bundles) != 1:
+        raise RuntimeError(
+            "expected one local conversation renderer bundle, "
+            f"found {len(thread_bundles)}"
+        )
+    thread_bundle_path = thread_bundles[0]
+    thread_bundle = thread_bundle_path.read_text(encoding="utf-8")
+    if "function CodexMuxThreadSubscription(" in thread_bundle:
+        raise RuntimeError("source app already contains the Codex thread indicator")
+
+    thread_component = transform_thread_subscription_8378(token)
+    thread_bundle = replace_unique(
+        thread_bundle,
+        thread_component_anchor,
+        thread_component + "\n" + thread_component_anchor,
+        "the native thread summary sources component",
+    )
+
+    summary_children_anchor = "children:[m,h,g,_,v,y,b,x]"
+    thread_bundle = replace_unique(
+        thread_bundle,
+        summary_children_anchor,
+        "children:[m,h,g,_,v,(0,cE.jsx)(CodexMuxThreadSubscription,{}),y,b,x]",
+        "the native thread summary section list",
+    )
+    thread_bundle_path.write_text(thread_bundle, encoding="utf-8")
+    check_js_module_syntax(thread_bundle_path)
+
+
+def patch_renderer_8378(extracted: Path, token: str) -> None:
+    """Apply the build-8378 split-bundle anchor set (Intel Core)."""
+    patch_app_initial_8378(extracted, token)
+    patch_app_primary_8378(extracted, token)
+    patch_profile_8378(extracted)
+    patch_plugins_8378(extracted)
+    patch_thread_8378(extracted, token)
+
+
 def patch_desktop_profile(
     extracted: Path,
     installed_computer_use_app: Path | None = None,
@@ -1497,6 +2048,19 @@ def patch_app(
         computer_use_enabled = compatibility.computer_use_supported
         expected_cua_replacements = compatibility.cua_identifier_replacements
         expected_asar_cua_replacements = compatibility.asar_cua_identifier_replacements
+    renderer = lookup_renderer_compatibility(
+        source_version, source_build, source_architecture
+    )
+    if renderer is not None:
+        print(
+            f"Renderer anchor set: build {renderer.build} "
+            f"({renderer.architecture}, {renderer.layout} layout)"
+        )
+    else:
+        print(
+            "Renderer anchor set: legacy build-6396 anchors "
+            "(fail-closed on unfamiliar bundles)"
+        )
     if computer_use_enabled:
         print("Capability level: full (independent Computer Use helper)")
     else:
@@ -1505,7 +2069,7 @@ def patch_app(
             "without the Computer Use helper)"
         )
 
-    for tool in ("codesign", "ditto", "go", "npm", "security", "xcrun"):
+    for tool in ("codesign", "ditto", "go", "node", "npm", "security", "xcrun"):
         require_tool(tool)
     asar = ensure_asar_tool()
     token = load_or_create_token()
@@ -1555,7 +2119,7 @@ def patch_app(
                 installed_computer_use_app=None,
                 computer_use_enabled=False,
             )
-        patch_renderer(extracted, token)
+        patch_renderer(extracted, token, renderer)
         sign_native_code_tree(extracted, signing_identity)
         repacked_asar = temporary_path / "app.asar"
         run(

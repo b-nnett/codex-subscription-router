@@ -7,6 +7,7 @@ filesystem fixture lives under a temporary directory.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -410,6 +411,331 @@ class BuildVerificationTests(unittest.TestCase):
                 check=True,
             )
             self.assertIn(arch, macho_architectures(launcher))
+
+
+class RequireUniqueTests(unittest.TestCase):
+    def test_positive(self) -> None:
+        patch_app.require_unique("ab ab".replace("ab ab", "xay"), "x", "demo")
+
+    def test_zero_matches_fails(self) -> None:
+        with self.assertRaises(RuntimeError):
+            patch_app.require_unique("hello", "zzz", "demo")
+
+    def test_two_matches_fail(self) -> None:
+        with self.assertRaises(RuntimeError):
+            patch_app.require_unique("x x", "x", "demo")
+
+    def test_replace_unique(self) -> None:
+        self.assertEqual(
+            patch_app.replace_unique("aXb", "X", "YZ", "demo"), "aYZb"
+        )
+        with self.assertRaises(RuntimeError):
+            patch_app.replace_unique("aXbXc", "X", "YZ", "demo")
+
+    def test_replace_identifier_ignores_substrings(self) -> None:
+        text = "e7 e70 Ge7 e7."
+        self.assertEqual(
+            patch_app.replace_identifier(text, "e7", "dq", 2, "demo"),
+            "dq e70 Ge7 dq.",
+        )
+        with self.assertRaises(RuntimeError):
+            patch_app.replace_identifier(text, "e7", "dq", 3, "demo")
+
+
+class RendererCompatibilityTests(unittest.TestCase):
+    def test_arm_legacy_profile(self) -> None:
+        profile = patch_app.lookup_renderer_compatibility(
+            "26.803.61601", "6396", "arm64"
+        )
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.layout, "legacy")
+
+    def test_intel_split_profile(self) -> None:
+        profile = patch_app.lookup_renderer_compatibility(
+            "26.903.61454", "8378", "x86_64"
+        )
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.layout, "split")
+
+    def test_renderer_lookup_is_architecture_aware(self) -> None:
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("26.903.61454", "8378", "arm64")
+        )
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("26.803.61601", "6396", "x86_64")
+        )
+
+    def test_unknown_renderer_is_none(self) -> None:
+        self.assertIsNone(
+            patch_app.lookup_renderer_compatibility("99.0", "1", "x86_64")
+        )
+
+
+TEST_TOKEN_8378 = "ab" * 32
+
+
+class Transform8378Tests(unittest.TestCase):
+    def test_prelude_is_self_contained(self) -> None:
+        prelude = patch_app.app_initial_prelude_8378(TEST_TOKEN_8378)
+        for helper in (
+            "codexMuxScopePluginRequest",
+            "codexMuxRequest",
+            "codexMuxProfileData",
+            "codexMuxRateLimitResets",
+            "codexMuxConsumeRateLimitReset",
+        ):
+            self.assertIn(helper, prelude)
+        self.assertIn(TEST_TOKEN_8378, prelude)
+        self.assertNotIn("__CODEX_MUX_CONTROL_TOKEN__", prelude)
+        for upstream in ("e7", "kXc", "QLs", "CH", "Pyn", "Qy", "vr"):
+            self.assertIsNone(
+                re.search(rf"(?<![\w$]){upstream}(?![\w$])", prelude),
+                f"prelude references {upstream}",
+            )
+
+    def test_account_menu_transform(self) -> None:
+        component = patch_app.transform_account_menu_8378(TEST_TOKEN_8378)
+        self.assertIn("function CodexMuxAccountMenu(", component)
+        self.assertIn("(0, dq.jsx)(tG,", component)
+        self.assertIn("const modalScope = fo(HE);", component)
+        self.assertEqual(
+            len(re.findall(r"(?<![\w$])Qy(?![\w$])", component)), 5
+        )
+        self.assertIn("LeftIcon: MG,", component)
+        self.assertIn("Zv(modalScope, CodexMuxUsageModal, {})", component)
+        self.assertIn("uB(imageUrl || null)", component)
+        self.assertIn("const profileQueryClient = vr();", component)
+        self.assertNotIn('tone: "danger"', component)
+        self.assertNotIn("allowWrap", component)
+        for remnant in (
+            "e7",
+            "kXc",
+            "QLs",
+            "CH",
+            "_H",
+            "S2",
+            "BW",
+            "jLa",
+        ):
+            self.assertIsNone(
+                re.search(rf"(?<![\w$]){remnant}(?![\w$])", component),
+                f"remnant {remnant}",
+            )
+
+    def test_thread_transform(self) -> None:
+        component = patch_app.transform_thread_subscription_8378(TEST_TOKEN_8378)
+        self.assertIn("function CodexMuxThreadSubscription(", component)
+        self.assertIn("const route = ve(ds);", component)
+        self.assertIn("Uk.useState", component)
+        self.assertIn("Uk.useEffect", component)
+        self.assertIn("(0, cE.jsx)(Z.Section,", component)
+        for remnant in ("$n", "sr", "zE", "TE"):
+            self.assertIsNone(
+                re.search(rf"(?<![\w$]){remnant}(?![\w$])", component),
+                f"remnant {remnant}",
+            )
+
+
+def _write_assets(root: Path, files: dict[str, str]) -> Path:
+    assets = root / "webview" / "assets"
+    assets.mkdir(parents=True)
+    for name, text in files.items():
+        (assets / name).write_text(text, encoding="utf-8")
+    (root / "webview" / "index.html").write_text("<html></html>", encoding="utf-8")
+    return root
+
+
+APP_INITIAL_FIXTURE_8378 = """\
+export const __fixture = 1;
+class AppServerRequestClient {
+  async sendRequest(e,t,n){if(this.dispatchMessage==null)throw Error(`AppServerRequestClient is missing a message dispatcher`);return e===`config/read`?this.sendConfigReadRequest(t,n):this.enqueueRequest(e,t,e===`plugin/list`&&n?.timeoutMs==null?{...n,timeoutMs:cwn}:n)}
+  enqueueRequest(e,t,n) { return [e, t, n]; }
+  sendConfigReadRequest(t,n) { return [t, n]; }
+}
+const RPC_MAP = {"mcpServer/oauth/login":`mcp`, "mcpServerStatus/list":`mcp`};
+const RPC_APPS = ["app/list", "app/installed", "app/read"];
+async function pJs(){let e=await vO.safeGet(`/wham/profiles/me`);return e;}
+function listMcpServers(e,t){let n=JSON.stringify({options:t,params:e});return n;}
+function x5i(){let e=(0,lq.c)(1);dz(),sb(null);let t;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(t={queryKey:[`rate-limit-reset-credits`],queryFn:C5i,select:S5i,refetchInterval:nD.ONE_MINUTE,staleTime:nD.FIVE_SECONDS},e[0]=t):t=e[0],gb(t)}
+function w5i(){let e=(0,lq.c)(3),t=fb(),n=eD(),r;return e[0]!==n||e[1]!==t?(r={mutationFn:T5i,onSuccess:(e,r)=>{let{creditId:i}=r,a=e.code;if(a===`reset`||a===`already_redeemed`){let n=e.code===`reset`?e.credit?.id??i:i;t.setQueryData([`rate-limit-reset-credits`],e=>s8i(e,a,n))}Promise.all([n([`rate-limit-status`]),n([`rate-limit-reset-credits`])])}},e[0]=n,e[1]=t,e[2]=r):r=e[2],yb(r)}
+"""
+
+APP_PRIMARY_FIXTURE_8378 = """\
+export const __fixture = 1;
+function kyn(e){let t=(0,uq.c)(223),{sidebarFooter:n,triggerButton:r}=e;return [n, r];}
+const menuProps = {usageItems:wt, other:1};
+const dropdown = {triggerButton:Ot,onOpenChange:c,children:[F,null]};
+function Adn(e){return e;}
+const F=D!=null&&T!==`idle`&&!(T===`awaiting-refresh`&&N)?D:j;
+const header=(ge=(0,eG.jsxs)(Eb,{children:[me,he]}));
+const d1={defaultMessage:`You’re out of Codex and Work usage`};
+const d2={defaultMessage:`You’ve used all Codex and Work usage`};
+const d3={defaultMessage:`You’ve reached your usage limit`};
+"""
+
+PROFILE_FIXTURE_8378 = (
+    "export const x = 1;\n"
+    "export const avatar = {avatar:(0,$.jsxs)($.Fragment,{children:[(0,$.jsxs)(`label`,{"
+    "className:ue(`group relative flex size-20`,`extra`),children:[]})]})};\n"
+)
+
+PLUGINS_FIXTURE_8378 = (
+    "export const x = 1;\n"
+    "export const panel = (0,D.jsx)(o,{title:O,subtitle:k,action:F,children:w});\n"
+)
+
+THREAD_FIXTURE_8378 = (
+    "export const x = 1;\n"
+    "function iE(e){let t=(0,sE.c)(37);return e;}\n"
+    "export const list = {children:[m,h,g,_,v,y,b,x]};\n"
+)
+
+
+class Patch8378FixtureTests(unittest.TestCase):
+    def test_app_initial_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary), {"app-initial-fixture.js": APP_INITIAL_FIXTURE_8378}
+            )
+            patch_app.patch_app_initial_8378(root, TEST_TOKEN_8378)
+            bundle = (
+                root / "webview" / "assets" / "app-initial-fixture.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn("codexMuxScopePluginRequest(e,t)", bundle)
+            self.assertIn("codexMuxProfileData(", bundle)
+            self.assertIn("window.__codexMuxResetAccountId", bundle)
+            self.assertNotIn("queryFn:C5i,", bundle)
+            self.assertNotIn("mutationFn:T5i,", bundle)
+            # Already-patched detection is deterministic.
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_app_initial_8378(root, TEST_TOKEN_8378)
+
+    def test_app_initial_fixture_missing_anchor_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "app-initial-fixture.js": (
+                        "export const x = 1;\n"
+                        "async function pJs(){return null;}\n"
+                    )
+                },
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_app_initial_8378(root, TEST_TOKEN_8378)
+
+    def test_app_primary_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary), {"app-primary-fixture.js": APP_PRIMARY_FIXTURE_8378}
+            )
+            patch_app.patch_app_primary_8378(root, TEST_TOKEN_8378)
+            bundle = (
+                root / "webview" / "assets" / "app-primary-fixture.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn("function CodexMuxAccountMenu(", bundle)
+            self.assertIn("usageItems:(0,dq.jsx)(CodexMuxAccountMenu,{})", bundle)
+            self.assertIn("CodexMuxProfileMenuOpenChange(c)", bundle)
+            self.assertIn("function Adn(e){CodexMuxUseResetAccountState();", bundle)
+            self.assertIn("window.__codexMuxSelectedUsageWindows??", bundle)
+            self.assertIn("window.__codexMuxResetAccountSelector??null]}", bundle)
+            self.assertEqual(
+                bundle.count("All connected subscriptions are depleted"), 3
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_app_primary_8378(root, TEST_TOKEN_8378)
+
+    def test_app_primary_fixture_near_match_fails(self) -> None:
+        # A near-match (different memo arity) must not patch.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "app-primary-fixture.js": (
+                        "export const x = 1;\n"
+                        "function kyn(e){let t=(0,uq.c)(224),{sidebarFooter:n,triggerButton:r}=e;return null;}\n"
+                    )
+                },
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_app_primary_8378(root, TEST_TOKEN_8378)
+
+    def test_profile_fixture_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "profile-state-a.js": "export const a = 1;\n",
+                    "profile-abc123.js": PROFILE_FIXTURE_8378,
+                    "profile-state-b.js": "export const b = 2;\n",
+                },
+            )
+            patch_app.patch_profile_8378(root)
+            bundle = (
+                root / "webview" / "assets" / "profile-abc123.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn("globalThis.CodexMuxProfileAvatarStack?.({})??null", bundle)
+            self.assertIn("globalThis.CodexMuxProfileAvatarStack?`hidden`", bundle)
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_profile_8378(root)
+
+    def test_profile_fixture_no_match_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary), {"profile-abc123.js": "export const a = 1;\n"}
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_profile_8378(root)
+
+    def test_plugins_fixture_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "plugins-settings-a.js": "export const a = 1;\n",
+                    "plugins-settings-b.js": PLUGINS_FIXTURE_8378,
+                    "plugins-settings-c.js": "export const c = 3;\n",
+                },
+            )
+            patch_app.patch_plugins_8378(root)
+            bundle = (
+                root / "webview" / "assets" / "plugins-settings-b.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn("globalThis.CodexMuxPluginScope?.()??null", bundle)
+
+    def test_thread_fixture_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "local-conversation-thread-a.js": "export const a = 1;\n",
+                    "local-conversation-thread-b.js": THREAD_FIXTURE_8378,
+                    "local-conversation-thread-c.js": "export const c = 3;\n",
+                },
+            )
+            patch_app.patch_thread_8378(root, TEST_TOKEN_8378)
+            bundle = (
+                root / "webview" / "assets" / "local-conversation-thread-b.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn("function CodexMuxThreadSubscription(", bundle)
+            self.assertIn("(0,cE.jsx)(CodexMuxThreadSubscription,{})", bundle)
+            self.assertNotIn("children:[m,h,g,_,v,y,b,x]", bundle)
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_thread_8378(root, TEST_TOKEN_8378)
+
+    def test_thread_fixture_two_matches_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _write_assets(
+                Path(temporary),
+                {
+                    "local-conversation-thread-a.js": THREAD_FIXTURE_8378,
+                    "local-conversation-thread-b.js": THREAD_FIXTURE_8378,
+                },
+            )
+            with self.assertRaises(RuntimeError):
+                patch_app.patch_thread_8378(root, TEST_TOKEN_8378)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ hash mismatch by default; `--allow-untested-source` is an explicit diagnostic
 override. Never weaken an anchor-count or binary-constant check merely to make
 a new build complete. Review the upstream change and update the patch deliberately.
 
-## Intel x86_64 (port in progress, `intel-x86_64` branch)
+## Intel x86_64 (`intel-x86_64` branch)
 
 | Component | Value |
 | --- | --- |
@@ -27,13 +27,15 @@ a new build complete. Review the upstream change and update the patch deliberate
 | Official ChatGPT version | `26.903.61454` |
 | Official bundle build | `8378` |
 | `app.asar` SHA-256 | `a5f9500e023a65f98dafca3a24a3c0fdf23646caf961b8b3df960d6057e7b450` |
+| Renderer anchor set | `split` layout (`app-initial` + `app-primary`), all anchors `count == 1`, post-patch `node --check` green |
 | Computer Use | Core only (no helper shipped in this Intel build; x86_64 binary patch not implemented) |
-| Tested macOS | none yet (audit host: macOS 13.7.8; installer requires macOS 14+ on Intel) |
+| Tested macOS | 13.7.8 (Intel MacBook Pro; upstream declares minos 13.0, installer policy stays 14+) |
+| Signing | diagnostic ad-hoc build verified with `codesign --verify --deep --strict` |
 
-This Intel build is intentionally **not** allow-listed: its renderer anchors
-differ from the ARM64 build (see `docs/INTEL-AUDIT.md`) and the patcher stops
-fail-closed on the first unverified anchor. A diagnostic Core build gets
-through architecture detection, `x86_64` multiplexer/launcher builds, desktop
-profile isolation, and the updater disable before that stop. Details and the
-remaining renderer re-derivation work are recorded in
-`docs/INTEL-E2E-REPORT.md`.
+The Intel build is allow-listed as a Core (no-helper) source after a full
+anchor review (`docs/INTEL-RENDERER-8378.md`). A production build no longer
+needs `--allow-untested-source` (ad-hoc signing still needs its explicit
+flag on hosts without a team identity). Runtime E2E covered launch,
+primary account, usage, mux fan-out, control API, and log monitoring; the
+second subscription and interactive UI selectors need a manual session (see
+`docs/INTEL-E2E-REPORT.md`).

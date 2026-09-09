@@ -3,90 +3,97 @@
 Date: 2026-09-09. Host: Intel `x86_64`, macOS 13.7.8. Source:
 `/Applications/ChatGPT.app` version `26.903.61454` (build `8378`),
 `app.asar` `a5f9500e…7e7b450`. No team-backed signing identity on this host
-(ad-hoc only). Full audit: `docs/INTEL-AUDIT.md`.
+(ad-hoc only). Audit: `docs/INTEL-AUDIT.md`; renderer mapping:
+`docs/INTEL-RENDERER-8378.md`.
 
 ## Automated verification (all green)
 
 - `npm run check` — PASS: `go test ./...`, `go vet ./...`, `node --check`
-  (3 UI files), Python unit tests (30 tests), `bash -n install.sh`.
-- `git diff --check` — PASS.
-- New Python suite (`scripts/test_patch_app.py`, 30 tests) covers: `x86_64` ↔
-  `amd64` mapping, unsupported architectures, architecture-aware compatibility
-  lookup, Mach-O slice validation (accept host slice / reject missing slice),
-  source-architecture detection (host slice / mismatch refusal / non-Mach-O
-  refusal), ARM64 team-patch exact-occurrence rewriting and fail-closed counts,
-  x86_64 patch refusal, dispatcher routing, Core-vs-Full desktop-profile output
-  (no helper env vars in Core, helper pin in Full, updater exactly-once for
-  both bootstrap shapes), plus real `go build` (`GOOS=darwin GOARCH=amd64`)
-  and `xcrun clang -arch x86_64` builds verified with `lipo -archs`.
-- `npm run release:check` — PASS (no release artifacts or credentials tracked).
+  (UI files), Python unit tests (**72 tests**, incl. 21 new 8378
+  fixture/transform tests), `bash -n install.sh`.
+- `npm run release:check` — PASS. `git diff --check` — PASS.
+- Post-patch validation is built into the patcher: every 8378 anchor asserts
+  `count == 1` before replacement, injected markers are asserted after, and
+  each modified bundle passes `node --check` as ESM.
 
-## Diagnostic build (isolated destination, ad-hoc, untested source)
+## Builds
 
-Command (destination kept under `/tmp`, official app never touched):
+- Diagnostic Core build (`--allow-untested-source --allow-adhoc-signing`,
+  destination under `/tmp`): PASS.
+- Production Core build (`--allow-adhoc-signing` only, no untested-source
+  flag after the compatibility entry was added): **PASS** (`exit=0`).
+- `codesign --verify --deep --strict` on the built app: PASS.
+- Built artifacts: `codex` (mux) `x86_64`, `codex.real` `x86_64`,
+  `CodexSubscriptionRouterLauncher` `x86_64`, identifier `app.cdxmux.multi`,
+  no Computer Use helper installed.
+- Repacked `app.asar` re-extracted with the locked asar tool: all 22
+  marker post-conditions hold (scope helper ×1, menu ×1, depletion ×3,
+  avatar stack, plugin scope, thread section, old anchors gone).
+- Official `app.asar` SHA-256 identical before and after every build
+  (`a5f9500e…7e7b450`). `~/.codex` untouched; `~/.codex-mux` gained only the
+  operational `control-token`/`state.json`.
 
-```sh
-python3 scripts/patch_app.py \
-  --destination "/tmp/csr-intel-diag/Codex Subscription Router.app" \
-  --allow-untested-source --allow-adhoc-signing
-```
+## Runtime E2E — Core (live, this host)
 
-Result:
+Launched via both the direct binary and `open` (first `open` awaited a
+one-time Gatekeeper verification of the ad-hoc signature — environmental,
+not a port issue; a team signature removes it).
 
-- `Source ChatGPT version: 26.903.61454 (8378), architecture: x86_64` — PASS
-  (detection works and is printed).
-- `Capability level: core …` — PASS (untested source defaults to Core).
-- `Building multiplexer for x86_64…` — PASS (`file`/`lipo -archs` → `x86_64`).
-- `Copying ChatGPT.app…` + launcher install — PASS (launcher `x86_64`).
-- `Patching desktop profile and renderer…` — profile isolation and the
-  new-shape updater disable applied to the real Intel bootstrap/main bundles
-  (verified separately on the extracted tree); then fail-closed stop:
-  `patch failed: could not find the native ChatGPT profile menu component`.
-- Full-mode attempt (`--enable-computer-use`) stops even earlier and
-  fail-closed: `expected 17 Computer Use references in app.asar, found 16`.
-- Official `app.asar` SHA-256 identical before and after (`a5f9500e…7e7b450`).
-  Staged temp directory cleaned up; nothing installed to `~/Applications`.
+| Check | Result |
+| --- | --- |
+| App launches, no `Bad CPU type` / `wrong architecture` | PASS |
+| Independent Chromium profile (`…/Application Support/Codex Subscription Router`) | PASS |
+| GPU/renderer/network/storage helpers start under the new profile | PASS |
+| `codex` mux starts and fans out to `codex.real` app-server child | PASS |
+| Primary subscription detected (Plus, masked email, avatar) | PASS |
+| Pooled usage loads (8% / 300 min, 28% / 10080 min, 27 threads) | PASS |
+| Combined profile endpoint returns identity + stats | PASS |
+| Rate-limit reset credits listed for primary | PASS |
+| App-server RPCs route with `errorCode=null` (`account/read`, `config/read`, …) | PASS |
+| Control API rejects unauthenticated calls (`unauthorized`) | PASS |
+| Control service binds loopback-only (`127.0.0.1:48123`) | PASS |
+| Renderer/main logs: no `Uncaught`, `TypeError`, `ReferenceError`, `SyntaxError`; no control API 4xx/5xx | PASS |
+| Push-notification registration fails with `Bundle identifier mismatch` | Expected (independent bundle ID; push only) |
 
-## Runtime E2E — Core
-
-Not executed: no installable Core build exists yet because the renderer
-JS-bundle anchors for upstream build 8378 are not re-derived (see audit
-table). The patcher refuses to produce a partially patched app, which is the
-required behaviour. Remaining work, in order:
-
-1. Re-derive the ~20 renderer anchors for build 8378 (new chunk layout:
-   3x `profile-*`, 3x `plugins-settings-*`, 3x `local-conversation-thread-*`;
-   new minified symbols) and map every inserted snippet symbol.
-2. Add the tested Intel `SourceCompatibility` profile (with
-   `computer_use_supported=False`) only after a full anchor review.
-3. Rebuild on a macOS 14+ Intel Mac with a team-backed identity, then run the
-   Core checklist (launch, two subscriptions, routing, sticky threads,
-   failover, pooled usage, Profile/Plugins/reset selectors).
+Not executed live (need an interactive session with a second paid
+subscription and UI clicks): second-subscription device login, new-chat
+routing distribution, sticky-owner follow-ups, simulated failover,
+all-depleted UI, Profile/Plugins/reset selector clicks, thread indicator
+visual, Appshots. Routing/sticky/failover **logic** is unchanged portable Go
+covered by unit tests; only the live two-account exercise is pending.
 
 ## Runtime E2E — Full (Computer Use / Appshots)
 
-Not implemented: Intel build 8378 ships no `SkyComputerUseService` (empty
-`@oai/sky/bin/`, on-demand canonical sync instead), so there is no Intel
-binary whose team-check instruction sequence could be proven. The x86_64
-patch branch raises instead of guessing. No live helper test is possible or
-claimed.
+Not implemented: Intel build 8378 ships no `SkyComputerUseService`, so there
+is no Intel binary whose team-check sequence could be proven. The x86_64
+patch branch raises instead of guessing.
+
+## macOS 13 compatibility assessment — verdict **C**
+
+`LSMinimumSystemVersion` is `13.0`; `LC_BUILD_VERSION` minos is 13.0 for the
+main executable, the Electron framework, and all helpers (cua `node`:
+13.5); our mux declares 12.0 and the launcher 13.0. The 14+ installer rule
+for Intel is therefore policy-only for this build and stays unchanged; the
+live E2E above ran on macOS 13.7.8 without OS-related failures.
 
 ## Regression — ARM64
 
-- ARM64 code path preserved: `arm64_swift_small_string()`, occurrence counts
-  (49/17), and the `26.803.61601`/`6396` compatibility profile are unchanged
-  and covered by unit tests (synthetic-binary exact-occurrence test).
+- ARM64 code path untouched: legacy single-bundle anchors, `arm64_swift_small_string()`,
+  49/17 occurrence counts, and the `26.803.61601`/`6396` profiles are intact.
 - `install.sh` still accepts `arm64`.
 - Live ARM64 E2E: **not executed** (no Apple-silicon Mac available).
 
 ## Verdict
 
 ```text
-INTEL CORE: FAIL (blocked on renderer anchor re-derivation for build 8378; infrastructure PASS, fail-closed PASS)
-INTEL COMPUTER USE: NOT IMPLEMENTED (no Intel helper binary shipped; x86_64 patch fail-closed by design)
-ARM64 REGRESSION: PASS (unit/static) / NOT TESTED (live E2E)
+INTEL RENDERER 8378: PASS (16/16 patches, exact counts, syntax-checked)
+INTEL CORE BUILD: PASS (production flags, ad-hoc signature verified strict)
+INTEL CORE E2E: PASS (launch → primary → usage → mux → API → logs) / PARTIAL (second account + interactive selectors NOT TESTED)
+HOST macOS 13: COMPATIBLE (verdict C; minos 13.0 throughout)
+ARM64 STATIC REGRESSION: PASS (unit/static) / NOT TESTED (live E2E)
 ```
 
-No check was weakened to reach a PASS: every anchor/occurrence assertion is
-intact, the Intel build is not allow-listed, and the official ChatGPT app is
-byte-identical before and after.
+Split per the task: build compatibility PASS, runtime compatibility PASS
+for everything executable headlessly on this host, host-OS compatibility
+PASS, with the interactive two-account items explicitly outstanding — not a
+renderer or architecture failure.
