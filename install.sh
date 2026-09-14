@@ -134,7 +134,7 @@ main() {
     fi
 
     log "Building and signing Codex Subscription Router"
-    python3 scripts/patch_app.py "${patch_arguments[@]}"
+    python3 scripts/patch_app.py ${patch_arguments[@]+"${patch_arguments[@]}"}
 
     log "Launching Codex Subscription Router"
     open "${DESTINATION_APP}"
