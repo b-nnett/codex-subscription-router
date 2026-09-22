@@ -136,6 +136,11 @@ func (c *Child) Request(ctx context.Context, method string, params json.RawMessa
 	}
 }
 
+// Done is closed after the app-server process exits.
+func (c *Child) Done() <-chan struct{} {
+	return c.closed
+}
+
 func (c *Child) Close() error {
 	if c.command.Process == nil {
 		return nil

@@ -61,3 +61,28 @@ routes require a random 256-bit token. CORS is limited to the copied app's
 `app://-` origin. The service exposes account metadata, aggregated usage and
 profile data, thread ownership, login/logout actions, and an authenticated SSE
 event stream; it never returns OAuth tokens.
+
+## Failover history handoff
+
+Before resuming on another subscription, the router copies the selected thread's
+JSONL rollout into that account's dated `sessions` directory. This is required
+for paginated histories: Codex also resolves the thread by ID in the target home,
+so supplying only the source's absolute `path` is insufficient. The copy is
+published by atomic rename with mode `0600`; account databases and credentials
+are never copied. The source retains its own file, so its loaded recorder cannot
+write into the destination's history.
+
+Only an idle source and an unloaded destination are eligible. If a previous
+owner still has the thread loaded, reopen the router before moving it back;
+`thread/resume` would otherwise reuse stale in-memory context. Failed transfers
+keep the existing owner. Thread listing ignores retained non-owner snapshots,
+and late notifications from previous owners cannot change ownership or close
+the migrated chat.
+
+The optional regression test exercises the installed app-server with synthetic
+legacy and paginated histories, without credentials or model turns:
+
+```sh
+CODEX_MUX_TEST_CODEX=/absolute/path/to/codex.real \
+  go test ./internal/mux -run TestTransferRealCodex -v
+```
