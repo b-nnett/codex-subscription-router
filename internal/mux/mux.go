@@ -65,6 +65,9 @@ type Multiplexer struct {
 	initializeParams json.RawMessage
 	initialized      bool
 
+	// ponytail: serialize rare failovers; use per-thread locks if pool contention matters.
+	failoverMu sync.Mutex
+
 	externalMu     sync.Mutex
 	externalRoutes map[string]externalRoute
 	serverMu       sync.Mutex
@@ -340,6 +343,14 @@ func (m *Multiplexer) failoverTurn(
 	sourceAccountID string,
 	excluded map[string]struct{},
 ) {
+	m.failoverMu.Lock()
+	defer m.failoverMu.Unlock()
+	if owner, exists := m.store.ThreadOwner(threadID); exists && owner != sourceAccountID {
+		if err := m.forwardWithExclusions(owner, message, excluded); err != nil {
+			m.write(protocol.Failure(message.ID, -32023, err.Error()))
+		}
+		return
+	}
 	fallback, _, err := m.chooseAccountExcluding(ctx, excluded)
 	if err != nil {
 		m.write(m.allSubscriptionsDepleted(ctx, message.ID))
@@ -374,7 +385,7 @@ func (m *Multiplexer) resumeThreadOnAccount(ctx context.Context, threadID, sourc
 	if !ok {
 		return fmt.Errorf("target subscription is unavailable")
 	}
-	readParams, _ := json.Marshal(map[string]any{"threadId": threadID, "includeTurns": true})
+	readParams, _ := json.Marshal(map[string]any{"threadId": threadID, "includeTurns": false})
 	readResponse, err := source.Request(ctx, "thread/read", readParams)
 	if err != nil {
 		return fmt.Errorf("read existing chat: %w", err)
@@ -385,18 +396,36 @@ func (m *Multiplexer) resumeThreadOnAccount(ctx context.Context, threadID, sourc
 			Path          string `json:"path"`
 			CWD           string `json:"cwd"`
 			ModelProvider string `json:"modelProvider"`
+			Status        struct {
+				Type string `json:"type"`
+			} `json:"status"`
 		} `json:"thread"`
 	}
 	if err := json.Unmarshal(readResponse.Result, &readResult); err != nil {
 		return fmt.Errorf("decode existing chat: %w", err)
 	}
-	if readResult.Thread.ID == "" || readResult.Thread.Path == "" {
+	if readResult.Thread.ID != threadID || readResult.Thread.Path == "" {
 		return errors.New("existing chat has no resumable history path")
+	}
+	if readResult.Thread.Status.Type == "active" {
+		return errors.New("existing chat still has an active turn; retry after it completes")
+	}
+	account, ok := m.store.Account(targetAccountID)
+	if !ok {
+		return errors.New("target subscription is unavailable")
+	}
+	// A loaded target would reuse stale in-memory history instead of this snapshot.
+	if err := requireUnloadedThread(ctx, target, threadID); err != nil {
+		return err
+	}
+	path, err := copyThreadRollout(readResult.Thread.Path, account.CodexHome, threadID)
+	if err != nil {
+		return fmt.Errorf("copy existing chat: %w", err)
 	}
 	resumeParams, _ := json.Marshal(map[string]any{
 		"threadId":      threadID,
 		"history":       nil,
-		"path":          readResult.Thread.Path,
+		"path":          path,
 		"cwd":           readResult.Thread.CWD,
 		"model":         nil,
 		"modelProvider": readResult.Thread.ModelProvider,
@@ -463,9 +492,18 @@ func (m *Multiplexer) handleInbound(inbound backend.Inbound) {
 		go m.forwardAggregatedRateLimitNotification(inbound.Raw)
 		return
 	}
+	threadID := threadIDFromParams(message.Params)
+	if threadID == "" {
+		threadID = threadIDFromNotification(message.Params)
+	}
+	if owner, exists := m.store.ThreadOwner(threadID); exists && owner != inbound.AccountID {
+		return // The old account may still emit notifications for its retained snapshot.
+	}
 	if message.Method == "thread/started" {
 		if threadID := threadIDFromNotification(message.Params); threadID != "" {
-			_ = m.store.SetThreadOwner(threadID, inbound.AccountID)
+			if _, exists := m.store.ThreadOwner(threadID); !exists {
+				_ = m.store.SetThreadOwner(threadID, inbound.AccountID)
+			}
 		}
 	}
 	if message.Method == "turn/completed" ||

@@ -27,10 +27,21 @@ func (m *Multiplexer) aggregateThreadList(request protocol.Message) {
 	close(results)
 
 	threads := make([]map[string]any, 0)
+	seen := make(map[string]bool)
 	for accountResult := range results {
 		for _, thread := range accountResult.threads {
 			if threadID, ok := thread["id"].(string); ok {
-				_ = m.store.SetThreadOwner(threadID, accountResult.accountID)
+				owner, exists := m.store.ThreadOwner(threadID)
+				if exists && owner != accountResult.accountID {
+					continue
+				}
+				if seen[threadID] {
+					continue
+				}
+				seen[threadID] = true
+				if !exists {
+					_ = m.store.SetThreadOwner(threadID, accountResult.accountID)
+				}
 			}
 			threads = append(threads, thread)
 		}
