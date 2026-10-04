@@ -24,6 +24,6 @@
     "release:check": "python3 scripts/check_release.py"
   },
   "devDependencies": {
-    "@electron/asar": "4.2.1"
+    "@electron/asar": "4.3.1"
   }
 }
