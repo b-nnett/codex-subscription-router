@@ -72,18 +72,6 @@ async function codexMuxConsumeRateLimitReset(accountId, input) {
   );
 }
 
-function CodexMuxUsageModal({
-  onClose,
-}) {
-  return (0, e7.jsx)(QLs, {
-    defaultResetCreditsOpen: true,
-    initialAvailableCount: 0,
-    isRateLimitReached: false,
-    onClose,
-    onResetComplete: () => {},
-  });
-}
-
 function CodexMuxUseResetAccountState() {
   const cachedAccounts = (globalThis.__codexMuxConnectedAccounts || []).filter(
     (account) => account.connected && account.enabled,
@@ -227,7 +215,6 @@ function CodexMuxResetAccountSelector({
 }
 
 function CodexMuxAccountMenu() {
-  const modalScope = Lo(Q);
   const [accounts, setAccounts] = kXc.useState([]);
   const [loading, setLoading] = kXc.useState(true);
   const [busy, setBusy] = kXc.useState(false);
@@ -384,7 +371,10 @@ function CodexMuxAccountMenu() {
               ? `${Math.round(totalRemaining)}%`
               : "–",
         }),
-        onSelect: () => BW(modalScope, CodexMuxUsageModal, {}),
+        // The native usage sheet is opened through a host hook when the
+        // current ChatGPT build still exposes one; otherwise the row stays a
+        // read-only summary instead of failing.
+        onSelect: globalThis.__codexMuxOpenUsageModal || undefined,
         children: "Usage remaining",
       },
       "codex-mux-total",
@@ -687,7 +677,9 @@ function CodexMuxPluginScope() {
   const [accounts, setAccounts] = kXc.useState([]);
   const [selectedId, setSelectedId] = kXc.useState("primary");
   const [loading, setLoading] = kXc.useState(true);
-  const queryClient = lt();
+  const queryClient = globalThis.__codexMuxQueryClient?.() || {
+    invalidateQueries: async () => {},
+  };
   kXc.useEffect(() => {
     let live = true;
     codexMuxRequest("/accounts")
