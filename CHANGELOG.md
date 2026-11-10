@@ -30,9 +30,14 @@ this project uses [Semantic Versioning](https://semver.org/).
   with `patch_arguments[@]: unbound variable` and silently dropped
   `--allow-untested-source`.
 - The nested `CodexCLI.app`, `native`, and framework code are re-signed so a
-  deep verification passes, and the CLI is left untouched on builds that
-  provision their own copy: `26.1103.60933` copies `CodexCLI.app` into
-  `~/.codex/plugins/.plugin-appserver` and would overwrite a proxy.
+  deep verification passes.
+- The CLI is left untouched on builds that manage their own copy. On
+  `26.1103.60933` the desktop provisions `CodexCLI.app` into
+  `~/.codex/plugins/.plugin-appserver` and runs a policy handshake against it
+  before the menu appears; a proxy in either location fails that handshake and
+  the app pauses on "Organization settings could not be loaded". Multiplexing
+  is therefore inactive on this build, and the injected menu now hides itself
+  when the control service is unavailable instead of showing an error row.
 - Rewrite the ASAR integrity digest that newer Electron embeds in the framework,
   and drop restricted entitlements for ad-hoc signatures. Without both, the
   copied app crashed at launch even though it signed cleanly.

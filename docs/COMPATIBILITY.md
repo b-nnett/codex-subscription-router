@@ -57,9 +57,14 @@ does not hard-code chunk file names:
   requested for ad-hoc builds. Library validation between components would
   otherwise fail, because ad-hoc code has no team to share.
 - The desktop shell no longer launches `Resources/codex`. It provisions its own
-  copy of `codex-cli/CodexCLI.app` into `~/.codex/plugins/.plugin-appserver`
-  and re-copies it whenever the source bytes differ, so the proxy has nowhere
-  to live. The patcher therefore leaves the CLI alone on this build and prints
-  a warning: the app, the account menu, and the independent profile work, but
-  subscription multiplexing is inactive until the provisioning path can be
-  redirected.
+  copy of `codex-cli/CodexCLI.app` into `~/.codex/plugins/.plugin-appserver`,
+  re-copies it whenever the source bytes differ, and runs a policy handshake
+  against it before the profile menu appears. Replacing either copy with the
+  proxy makes that handshake fail ("Desktop startup policy read failed") and
+  the app stops on "Organization settings could not be loaded", so the patcher
+  leaves the CLI untouched on this build.
+
+  Consequence: the renderer patch, the independent profile, and the account
+  menu all work, but **subscription multiplexing is inactive** because the
+  control service only starts inside the proxy. The menu hides its router rows
+  when that service is missing, so the native ChatGPT menu looks untouched.

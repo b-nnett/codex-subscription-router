@@ -435,22 +435,10 @@ function CodexMuxAccountMenu() {
     );
   }
 
-  if (error) {
-    rows.push(
-      (0, e7.jsx)(
-        _H,
-        {
-          LeftIcon: S2,
-          SubText: error,
-          tone: "danger",
-          allowWrap: true,
-          subTextAllowWrap: true,
-          children: "Subscription pool unavailable",
-        },
-        "codex-mux-error",
-      ),
-    );
-  }
+  // The control service only runs when this build launches the router's Codex
+  // proxy. When it is missing the native menu should look untouched rather than
+  // showing an error the user cannot act on.
+  if (error && connected.length === 0) return null;
 
   if (!loading) {
     rows.push(

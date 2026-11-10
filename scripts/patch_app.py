@@ -697,16 +697,6 @@ def sign_independent_app(
             "--sign",
             identity,
             "--timestamp=none",
-            str(codex_cli_entrypoint(resources)),
-        ]
-    )
-    run(
-        [
-            "codesign",
-            "--force",
-            "--sign",
-            identity,
-            "--timestamp=none",
             str(app),
         ]
     )
@@ -727,25 +717,6 @@ def load_or_create_token() -> str:
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(token)
     return token
-
-
-def codex_cli_supports_proxy(entrypoint: Path) -> bool:
-    """Only the flat Resources/codex layout is safe to replace with the proxy."""
-    return entrypoint.parent.name != "MacOS"
-
-
-def codex_cli_entrypoint(resources: Path) -> Path:
-    """Locate the Codex CLI the desktop shell launches for app-server sessions."""
-    # The desktop shell execs the CLI bundle's own executable; bin/codex is only
-    # a shim that forwards to it, so the proxy has to replace the real one.
-    candidates = (
-        resources / "codex-cli" / "CodexCLI.app" / "Contents" / "MacOS" / "codex",
-        resources / "codex",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError("bundled Codex CLI was not found")
 
 
 def build_proxy(destination: Path) -> None:
@@ -1369,22 +1340,22 @@ def patch_app(
             dirs_exist_ok=True,
         )
 
-        bundled_codex = codex_cli_entrypoint(resources)
-        if codex_cli_supports_proxy(bundled_codex):
-            real_codex = bundled_codex.with_name(bundled_codex.name + ".real")
+        bundled_codex = resources / "codex"
+        if bundled_codex.is_file():
+            real_codex = resources / "codex.real"
             if real_codex.exists():
-                raise RuntimeError(
-                    f"source app already contains {real_codex.name} next to the CLI"
-                )
+                raise RuntimeError("source app already contains codex.real")
             bundled_codex.rename(real_codex)
             shutil.copy2(proxy, bundled_codex)
             bundled_codex.chmod(0o755)
         else:
+            # Newer builds launch a CodexCLI.app bundle the desktop provisions
+            # and re-copies itself, so a proxy there never stays in the launch
+            # path. Leave the CLI untouched and run the router without
+            # multiplexing instead of breaking the app server.
             print(
-                "Warning: this ChatGPT build launches its CLI from a nested "
-                "CodexCLI.app that the desktop provisions and validates "
-                "itself. The app is patched, but subscription multiplexing is "
-                "inactive on this build.",
+                "Warning: this ChatGPT build manages its own Codex CLI copy; "
+                "the app is patched but subscription multiplexing is inactive.",
                 file=sys.stderr,
             )
 
