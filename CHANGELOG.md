@@ -19,14 +19,20 @@ this project uses [Semantic Versioning](https://semver.org/).
   ships one `bootstrap.js` plus many `early-bootstrap-*` chunks still patches.
 - The injected account menu now binds to the host module's own JSX runtime,
   React namespace, and menu kit under freshly generated names, so minified
-  host identifiers can no longer be shadowed.
+  host identifiers can no longer be shadowed. `CH` also had to bind to the
+  menu-kit namespace (`D.ms`) rather than `D`; the wrong alias made
+  `Separator` undefined and took the whole renderer down with "ChatGPT hit a
+  snag" as soon as the profile menu opened.
+- The injected menu is wrapped in an error boundary, so a failure inside it
+  now hides the router rows instead of blanking the app.
 - The installer forwards its own arguments to the patcher and expands an empty
   option array safely under macOS `/bin/bash` 3.2, which previously aborted
   with `patch_arguments[@]: unbound variable` and silently dropped
   `--allow-untested-source`.
-- The Codex CLI proxy follows the CLI's move to
-  `Contents/Resources/codex-cli/bin/codex`, and the nested `CodexCLI.app`,
-  `native`, and framework code are re-signed so a deep verification passes.
+- The nested `CodexCLI.app`, `native`, and framework code are re-signed so a
+  deep verification passes, and the CLI is left untouched on builds that
+  provision their own copy: `26.1103.60933` copies `CodexCLI.app` into
+  `~/.codex/plugins/.plugin-appserver` and would overwrite a proxy.
 - Rewrite the ASAR integrity digest that newer Electron embeds in the framework,
   and drop restricted entitlements for ad-hoc signatures. Without both, the
   copied app crashed at launch even though it signed cleanly.

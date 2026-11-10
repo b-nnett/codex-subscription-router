@@ -56,3 +56,10 @@ does not hard-code chunk file names:
   `com.apple.developer.*` keys are dropped and the hardened runtime is not
   requested for ad-hoc builds. Library validation between components would
   otherwise fail, because ad-hoc code has no team to share.
+- The desktop shell no longer launches `Resources/codex`. It provisions its own
+  copy of `codex-cli/CodexCLI.app` into `~/.codex/plugins/.plugin-appserver`
+  and re-copies it whenever the source bytes differ, so the proxy has nowhere
+  to live. The patcher therefore leaves the CLI alone on this build and prints
+  a warning: the app, the account menu, and the independent profile work, but
+  subscription multiplexing is inactive until the provisioning path can be
+  redirected.

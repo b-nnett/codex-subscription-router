@@ -729,10 +729,17 @@ def load_or_create_token() -> str:
     return token
 
 
+def codex_cli_supports_proxy(entrypoint: Path) -> bool:
+    """Only the flat Resources/codex layout is safe to replace with the proxy."""
+    return entrypoint.parent.name != "MacOS"
+
+
 def codex_cli_entrypoint(resources: Path) -> Path:
     """Locate the Codex CLI the desktop shell launches for app-server sessions."""
+    # The desktop shell execs the CLI bundle's own executable; bin/codex is only
+    # a shim that forwards to it, so the proxy has to replace the real one.
     candidates = (
-        resources / "codex-cli" / "bin" / "codex",
+        resources / "codex-cli" / "CodexCLI.app" / "Contents" / "MacOS" / "codex",
         resources / "codex",
     )
     for candidate in candidates:
@@ -855,7 +862,7 @@ def unique_identifier(region: str, base_name: str) -> str:
     return name
 
 
-def host_bindings(region: str) -> tuple[dict[str, str], str]:
+def host_bindings(region: str) -> tuple[dict[str, str], str, str]:
     """Build the alias preamble the injected menu needs in a ChatGPT module.
 
     ChatGPT's renderer is minified, so the local names for the JSX runtime, the
@@ -879,12 +886,13 @@ def host_bindings(region: str) -> tuple[dict[str, str], str]:
     item = unique_identifier(region, "__codexMuxMenuItem")
     icon = unique_identifier(region, "__codexMuxStatusIcon")
     image = unique_identifier(region, "__codexMuxImageUrl")
+    boundary = unique_identifier(region, "__codexMuxBoundary")
 
     preamble = (
         f"const {jsx} = {{ jsx: {jsx_source}.jsx, jsxs: {jsx_source}.jsxs, "
         f"Fragment: {jsx_source}.Fragment }};\n"
         f"const {react} = {react_source};\n"
-        f"const {menu} = {menu_source};\n"
+        f"const {menu} = {menu_source}.ms;\n"
         f"const {item} = {menu_source}.tJ;\n"
         f"const {icon} = function CodexMuxStatusIcon() {{\n"
         f'  return (0, {jsx}.jsx)("span", {{"aria-hidden": true, '
@@ -892,7 +900,20 @@ def host_bindings(region: str) -> tuple[dict[str, str], str]:
         "};\n"
         f"const {image} = function codexMuxImageUrl(value) {{\n"
         "  return value || null;\n"
-        "};\n\n"
+        "};\n"
+        f"class {boundary} extends {react}.Component {{\n"
+        f"  constructor(props) {{ super(props); this.state = {{ failed: false }}; }}\n"
+        f"  static getDerivedStateFromError() {{ return {{ failed: true }}; }}\n"
+        "  componentDidCatch(error) {\n"
+        "    try {\n"
+        "      console.warn(\"Codex Subscription Router menu failed\", error);\n"
+        "    } catch {}\n"
+        "  }\n"
+        "  render() {\n"
+        f"    return this.state.failed ? null : (0, {jsx}.jsx)(\"span\", "
+        "{ style: { display: \"contents\" }, children: this.props.children });\n"
+        "  }\n"
+        "}\n\n"
     )
     substitutions = {
         "e7": jsx,
@@ -902,7 +923,7 @@ def host_bindings(region: str) -> tuple[dict[str, str], str]:
         "S2": icon,
         "jLa": image,
     }
-    return substitutions, preamble
+    return substitutions, preamble, boundary
 
 
 def patch_renderer_csp(extracted: Path) -> None:
@@ -944,7 +965,7 @@ def patch_account_menu(extracted: Path, token: str) -> None:
         r"ProfileDropdownItems:\(\)=>([A-Za-z0-9_$]+)",
         "profile dropdown items export",
     ).group(1)
-    substitutions, preamble = host_bindings(region)
+    substitutions, preamble, boundary = host_bindings(region)
 
     component_source = (PROJECT_ROOT / "ui" / "account-menu.js").read_text(
         encoding="utf-8"
@@ -976,7 +997,8 @@ def patch_account_menu(extracted: Path, token: str) -> None:
         r"(?=workspaceInviteItem:[A-Za-z0-9_$]+\}(?!\s*=))"
     )
     source, replacements = usage_pattern.subn(
-        f"usageItems:(0,{substitutions['e7']}.jsx)(CodexMuxAccountMenu,{{}}),",
+        f"usageItems:(0,{substitutions['e7']}.jsx)({boundary},{{children:"
+        f"(0,{substitutions['e7']}.jsx)(CodexMuxAccountMenu,{{}})}}),",
         source,
         count=1,
     )
@@ -1348,14 +1370,23 @@ def patch_app(
         )
 
         bundled_codex = codex_cli_entrypoint(resources)
-        real_codex = bundled_codex.with_name(bundled_codex.name + ".real")
-        if real_codex.exists():
-            raise RuntimeError(
-                f"source app already contains {real_codex.name} next to the CLI"
+        if codex_cli_supports_proxy(bundled_codex):
+            real_codex = bundled_codex.with_name(bundled_codex.name + ".real")
+            if real_codex.exists():
+                raise RuntimeError(
+                    f"source app already contains {real_codex.name} next to the CLI"
+                )
+            bundled_codex.rename(real_codex)
+            shutil.copy2(proxy, bundled_codex)
+            bundled_codex.chmod(0o755)
+        else:
+            print(
+                "Warning: this ChatGPT build launches its CLI from a nested "
+                "CodexCLI.app that the desktop provisions and validates "
+                "itself. The app is patched, but subscription multiplexing is "
+                "inactive on this build.",
+                file=sys.stderr,
             )
-        bundled_codex.rename(real_codex)
-        shutil.copy2(proxy, bundled_codex)
-        bundled_codex.chmod(0o755)
 
         patch_info_plist(staged_app, original_asar, team_identifier)
         print(f"Signing independent app copy with {signing_identity}…")
